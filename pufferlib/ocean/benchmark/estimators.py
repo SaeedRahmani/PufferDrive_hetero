@@ -2,7 +2,10 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+try:
+    import seaborn as sns
+except ImportError:
+    sns = None
 from typing import Optional
 
 np.set_printoptions(suppress=True)

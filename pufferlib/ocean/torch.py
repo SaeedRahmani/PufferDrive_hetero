@@ -81,6 +81,9 @@ class Drive(nn.Module):
         road_objects = road_obs.view(-1, self.max_road_objects, self.road_features)
         road_continuous = road_objects[:, :, : self.road_features - 1]
         road_categorical = road_objects[:, :, self.road_features - 1]
+        # Clamp to valid range [0, 6] — C obs can produce out-of-range values
+        # after episode resets (road type = entity->type - 4, valid types 4-10)
+        road_categorical = road_categorical.clamp(0, 6)
         road_onehot = F.one_hot(road_categorical.long(), num_classes=7)  # Shape: [batch, ROAD_MAX_OBJECTS, 7]
         road_objects = torch.cat([road_continuous, road_onehot], dim=2)
         ego_features = self.ego_encoder(ego_obs)
