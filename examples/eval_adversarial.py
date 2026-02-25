@@ -32,7 +32,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import torch
 
+import pufferlib.pytorch
 from pufferlib.pufferl import load_config, load_env, load_policy
 
 # ---------------------------------------------------------------------------
@@ -67,6 +69,7 @@ def make_eval_config(
     config["env"]["save_data_to_disk"] = False
     config["env"]["prep_human_data"] = False
     config["vec"]["backend"] = "PufferEnv"
+    config["vec"]["num_envs"] = 1
 
     # Perturbation settings
     config["env"]["use_perturbation_training"] = use_perturbation_training
@@ -85,45 +88,48 @@ def make_eval_config(
 def collect_rollout_metrics(config, vecenv, policy, num_steps: int = 910):
     """Roll out a policy for num_steps and collect aggregate metrics.
 
+    Properly handles:
+    - Environment reset before rollout
+    - LSTM state initialization and reset on truncation
+    - Info dict collection from step() return values
+
     Returns a dict of averaged metrics over the rollout.
     """
-    import torch
-
     policy.eval()
     device = next(policy.parameters()).device
+    num_agents = vecenv.num_agents  # total agents across all sub-envs
 
-    # Collect logs over the rollout
+    # Initialize LSTM state
+    state = dict(
+        lstm_h=torch.zeros(num_agents, policy.hidden_size, device=device),
+        lstm_c=torch.zeros(num_agents, policy.hidden_size, device=device),
+    )
+
+    # Reset environment
+    obs, _ = vecenv.reset()
+
     all_logs = []
-    obs = vecenv.observations
-    lstm_state = None
 
     for step in range(num_steps):
         with torch.no_grad():
-            obs_t = torch.from_numpy(obs).float().to(device)
-            if hasattr(policy, "encode_observations"):
-                # PufferLib LSTM-based policy
-                if lstm_state is None:
-                    hidden = policy.encode_observations(obs_t)
-                    lstm_state = policy.recurrent.initial_state(hidden.shape[0])
-                    lstm_state = tuple(s.to(device) for s in lstm_state)
-                hidden = policy.encode_observations(obs_t)
-                hidden, lstm_state = policy.recurrent(hidden, lstm_state)
-                actions = policy.decode_actions(hidden, deterministic=True)
-            else:
-                actions = policy(obs_t, deterministic=True)
+            obs_t = torch.as_tensor(obs).float().to(device)
+            logits, value = policy.forward_eval(obs_t, state)
+            actions, _, _ = pufferlib.pytorch.sample_logits(logits)
+            action_np = actions.cpu().numpy().reshape(vecenv.action_space.shape)
 
-            if isinstance(actions, tuple):
-                actions = actions[0]
-            actions = actions.cpu().numpy()
-
-        vecenv.step(actions)
-        obs = vecenv.observations
+        obs, rewards, terminals, truncations, infos = vecenv.step(action_np)
 
         # Collect any logs emitted by the env
-        step_info = vecenv.info() if hasattr(vecenv, "info") else []
-        for info_dict in step_info:
+        for info_dict in infos:
             if isinstance(info_dict, dict) and "n" in info_dict:
                 all_logs.append(info_dict)
+
+        # Reset LSTM state for truncated/terminated agents
+        done_mask = np.logical_or(terminals, truncations)
+        if np.any(done_mask):
+            done_idx = torch.tensor(np.where(done_mask)[0], device=device)
+            state["lstm_h"][done_idx] = 0
+            state["lstm_c"][done_idx] = 0
 
     return aggregate_logs(all_logs)
 
@@ -156,8 +162,6 @@ def run_sweep(
     output_dir: str = "results/adversarial",
 ):
     """Evaluate a single policy across multiple perturbation fractions."""
-    import torch
-
     fractions = fractions or PERTURBATION_FRACTIONS
     results = []
 
@@ -208,8 +212,6 @@ def run_comparison(
     output_dir: str = "results/adversarial",
 ):
     """Compare baseline vs adversarial-trained policy across perturbation levels."""
-    import torch
-
     fractions = fractions or PERTURBATION_FRACTIONS
     results = []
 

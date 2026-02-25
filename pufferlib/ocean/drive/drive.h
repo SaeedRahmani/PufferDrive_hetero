@@ -537,12 +537,24 @@ void assign_perturbations(Drive *env) {
             break;
         case PERTURB_SUDDEN_BRAKE:
             e->perturbation_brake_duration = env->perturb_brake_duration;
-            // Random brake start between 20% and 70% of episode length
+            // Random brake start between 20% and 70% of the episode window
             {
-                int min_start = (int)(env->episode_length * 0.2f);
-                int max_start = (int)(env->episode_length * 0.7f);
-                if (max_start <= min_start) max_start = min_start + 1;
-                e->perturbation_brake_start = env->init_steps + min_start + (rand() % (max_start - min_start));
+                int episode_duration = env->episode_length - env->init_steps;
+                // Need at least brake_duration steps in the episode
+                if (episode_duration < env->perturb_brake_duration + 1) {
+                    // Not enough room for a brake — skip this perturbation
+                    e->perturbation_type = PERTURB_NONE;
+                    e->perturbation_brake_duration = 0;
+                } else {
+                    int min_start = env->init_steps + (int)(episode_duration * 0.2f);
+                    int max_start = env->init_steps + (int)(episode_duration * 0.7f);
+                    // Clamp so brake window fits before episode end
+                    int latest_possible = env->episode_length - env->perturb_brake_duration;
+                    if (max_start > latest_possible) max_start = latest_possible;
+                    if (min_start > latest_possible) min_start = latest_possible;
+                    if (max_start < min_start) max_start = min_start;
+                    e->perturbation_brake_start = min_start + (rand() % (max_start - min_start + 1));
+                }
             }
             break;
         default:
