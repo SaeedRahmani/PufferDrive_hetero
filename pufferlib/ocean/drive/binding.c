@@ -213,6 +213,12 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     OVERRIDE_FLOAT(guidance_heading_weight);
     OVERRIDE_FLOAT(waypoint_reach_threshold);
     OVERRIDE_INT(use_guidance_observations);
+    OVERRIDE_INT(use_perturbation_training);
+    OVERRIDE_FLOAT(perturbation_fraction);
+    OVERRIDE_FLOAT(perturb_aggressive_speed);
+    OVERRIDE_FLOAT(perturb_slow_speed);
+    OVERRIDE_FLOAT(perturb_heading_offset);
+    OVERRIDE_INT(perturb_brake_duration);
     OVERRIDE_INT(collision_behavior);
     OVERRIDE_INT(offroad_behavior);
     OVERRIDE_FLOAT(dt);
@@ -239,6 +245,12 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->guidance_heading_weight = conf.guidance_heading_weight;
     env->waypoint_reach_threshold = conf.waypoint_reach_threshold;
     env->use_guidance_observations = conf.use_guidance_observations;
+    env->use_perturbation_training = conf.use_perturbation_training;
+    env->perturbation_fraction = conf.perturbation_fraction;
+    env->perturb_aggressive_speed = conf.perturb_aggressive_speed;
+    env->perturb_slow_speed = conf.perturb_slow_speed;
+    env->perturb_heading_offset = conf.perturb_heading_offset;
+    env->perturb_brake_duration = conf.perturb_brake_duration;
     env->episode_length = conf.episode_length;
     env->termination_mode = conf.termination_mode;
     env->collision_behavior = conf.collision_behavior;
@@ -280,6 +292,9 @@ static int my_log(PyObject *dict, Log *log) {
     assign_to_dict(dict, "goals_sampled_this_episode", log->goals_sampled_this_episode);
     assign_to_dict(dict, "goals_reached_this_episode", log->goals_reached_this_episode);
     assign_to_dict(dict, "speed_at_goal", log->speed_at_goal);
+    assign_to_dict(dict, "perturbed_agent_count", log->perturbed_agent_count);
+    assign_to_dict(dict, "perturbed_collision_count", log->perturbed_collision_count);
+    assign_to_dict(dict, "unperturbed_collision_count", log->unperturbed_collision_count);
     // assign_to_dict(dict, "avg_displacement_error", log->avg_displacement_error);
     return 0;
 }

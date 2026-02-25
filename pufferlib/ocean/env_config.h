@@ -20,6 +20,13 @@ typedef struct {
     float guidance_heading_weight;  // Weight for heading deviation penalty
     float waypoint_reach_threshold; // Distance threshold for hitting waypoints
     int use_guidance_observations;  // Boolean: whether to include egocentric guidance waypoints in observations
+    // Perturbation training config
+    int use_perturbation_training;   // Boolean: whether to enable perturbation-based adversarial training
+    float perturbation_fraction;     // Fraction of agents to perturb (0.0 to 1.0)
+    float perturb_aggressive_speed;  // Speed multiplier for aggressive agents
+    float perturb_slow_speed;        // Speed multiplier for slow agents
+    float perturb_heading_offset;    // Heading offset for lane drifters (radians)
+    int perturb_brake_duration;      // Duration of sudden brake (steps)
     float goal_radius;
     float goal_speed;
     int collision_behavior;
@@ -85,6 +92,18 @@ static int handler(void *config, const char *section, const char *name, const ch
         env_config->waypoint_reach_threshold = atof(value);
     } else if (MATCH("env", "use_guidance_observations")) {
         env_config->use_guidance_observations = atoi(value);
+    } else if (MATCH("env", "use_perturbation_training")) {
+        env_config->use_perturbation_training = atoi(value);
+    } else if (MATCH("env", "perturbation_fraction")) {
+        env_config->perturbation_fraction = atof(value);
+    } else if (MATCH("env", "perturb_aggressive_speed")) {
+        env_config->perturb_aggressive_speed = atof(value);
+    } else if (MATCH("env", "perturb_slow_speed")) {
+        env_config->perturb_slow_speed = atof(value);
+    } else if (MATCH("env", "perturb_heading_offset")) {
+        env_config->perturb_heading_offset = atof(value);
+    } else if (MATCH("env", "perturb_brake_duration")) {
+        env_config->perturb_brake_duration = atoi(value);
     } else if (MATCH("env", "goal_radius")) {
         env_config->goal_radius = atof(value);
     } else if (MATCH("env", "goal_speed")) {

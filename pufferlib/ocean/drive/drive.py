@@ -57,6 +57,12 @@ class Drive(pufferlib.PufferEnv):
         map_dir="resources/drive/binaries/training",
         ini_file_path="pufferlib/config/ocean/drive.ini",
         save_data_to_disk=True,
+        use_perturbation_training=0,
+        perturbation_fraction=0.0,
+        perturb_aggressive_speed=1.5,
+        perturb_slow_speed=0.5,
+        perturb_heading_offset=0.1,
+        perturb_brake_duration=10,
     ):
         # env
         self.dt = dt
@@ -85,6 +91,12 @@ class Drive(pufferlib.PufferEnv):
         self.dynamics_model = dynamics_model
         self.ini_file_path = ini_file_path
         self.save_data_to_disk = save_data_to_disk
+        self.use_perturbation_training = use_perturbation_training
+        self.perturbation_fraction = perturbation_fraction
+        self.perturb_aggressive_speed = perturb_aggressive_speed
+        self.perturb_slow_speed = perturb_slow_speed
+        self.perturb_heading_offset = perturb_heading_offset
+        self.perturb_brake_duration = perturb_brake_duration
 
         # Observation space calculation
         ego_features_base = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
@@ -228,6 +240,12 @@ class Drive(pufferlib.PufferEnv):
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
                 map_dir=map_dir,
+                use_perturbation_training=use_perturbation_training,
+                perturbation_fraction=perturbation_fraction,
+                perturb_aggressive_speed=perturb_aggressive_speed,
+                perturb_slow_speed=perturb_slow_speed,
+                perturb_heading_offset=perturb_heading_offset,
+                perturb_brake_duration=perturb_brake_duration,
             )
             env_ids.append(env_id)
 
@@ -325,6 +343,12 @@ class Drive(pufferlib.PufferEnv):
                 control_mode=self.control_mode,
                 map_dir=self.map_dir,
                 termination_mode=(int(self.termination_mode) if self.termination_mode is not None else 0),
+                use_perturbation_training=self.use_perturbation_training,
+                perturbation_fraction=self.perturbation_fraction,
+                perturb_aggressive_speed=self.perturb_aggressive_speed,
+                perturb_slow_speed=self.perturb_slow_speed,
+                perturb_heading_offset=self.perturb_heading_offset,
+                perturb_brake_duration=self.perturb_brake_duration,
             )
             env_ids.append(env_id)
         self.c_envs = binding.vectorize(*env_ids)

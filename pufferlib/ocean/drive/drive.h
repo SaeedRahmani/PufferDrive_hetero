@@ -27,6 +27,14 @@
 
 #define INVALID_POSITION -10000.0f
 
+// Perturbation Types (for adversarial training)
+#define PERTURB_NONE 0
+#define PERTURB_AGGRESSIVE 1      // Speed target × speed_multiplier (>1)
+#define PERTURB_SLOW 2             // Speed target × speed_multiplier (<1)
+#define PERTURB_LANE_DRIFT 3       // Heading target offset by ±heading_offset
+#define PERTURB_SUDDEN_BRAKE 4     // Speed target drops to 0 for brake_duration steps
+#define NUM_PERTURBATION_TYPES 4   // Number of active perturbation types (excluding NONE)
+
 // Trajectory Length
 #define TRAJECTORY_LENGTH 91
 
@@ -176,6 +184,9 @@ struct Log {
     float active_agent_count;
     float expert_static_agent_count;
     float static_agent_count;
+    float perturbed_agent_count;
+    float perturbed_collision_count;
+    float unperturbed_collision_count;
 };
 
 typedef struct Entity Entity;
@@ -239,6 +250,13 @@ struct Entity {
     int waypoints_hit_count;   // Total waypoints reached so far
     int total_valid_waypoints; // Total valid waypoints in trajectory
     float route_progress;      // Percentage of route completed (0.0 to 1.0)
+
+    // Perturbation fields (for adversarial training)
+    int perturbation_type;           // PERTURB_NONE, PERTURB_AGGRESSIVE, etc.
+    float perturbation_speed_mult;   // Speed guidance target multiplier (1.0 = normal)
+    float perturbation_heading_off;  // Heading guidance target offset in radians (0.0 = normal)
+    int perturbation_brake_start;    // Timestep when sudden brake begins (-1 = N/A)
+    int perturbation_brake_duration; // Duration of sudden brake in steps (default 10)
 };
 
 void free_entity(Entity *entity) {
@@ -346,6 +364,13 @@ struct Drive {
     float guidance_heading_weight;  // Weight for heading deviation penalty
     float waypoint_reach_threshold; // Distance threshold for hitting waypoints (e.g., 2.0m)
     int use_guidance_observations;  // Boolean: whether to include egocentric guidance waypoints in observations
+    // Perturbation training config
+    int use_perturbation_training;   // Boolean: whether to apply perturbations to a fraction of agents
+    float perturbation_fraction;     // Fraction of active agents that receive perturbations (0.0 to 1.0)
+    float perturb_aggressive_speed;  // Speed multiplier for aggressive agents (e.g., 1.5)
+    float perturb_slow_speed;        // Speed multiplier for slow agents (e.g., 0.5)
+    float perturb_heading_offset;    // Heading offset in radians for lane drifters (e.g., 0.1)
+    int perturb_brake_duration;      // Duration of sudden brake in steps (e.g., 10)
     char *map_name;
     float world_mean_x;
     float world_mean_y;
@@ -415,6 +440,19 @@ void add_log(Drive *env) {
         env->log.active_agent_count += env->active_agent_count;
         env->log.expert_static_agent_count += env->expert_static_agent_count;
         env->log.static_agent_count += env->static_agent_count;
+
+        // Perturbation logging
+        if (e->perturbation_type != PERTURB_NONE) {
+            env->log.perturbed_agent_count += 1.0f;
+            if (collided) {
+                env->log.perturbed_collision_count += 1.0f;
+            }
+        } else {
+            if (collided) {
+                env->log.unperturbed_collision_count += 1.0f;
+            }
+        }
+
         env->log.n += 1;
     }
 }
@@ -443,6 +481,79 @@ void init_action_space() {
 }
 
 // Guided autonomy helper functions
+
+// Assign perturbation types to a fraction of active agents on reset
+void assign_perturbations(Drive *env) {
+    // First, clear all perturbations
+    for (int i = 0; i < env->active_agent_count; i++) {
+        int agent_idx = env->active_agent_indices[i];
+        Entity *e = &env->entities[agent_idx];
+        e->perturbation_type = PERTURB_NONE;
+        e->perturbation_speed_mult = 1.0f;
+        e->perturbation_heading_off = 0.0f;
+        e->perturbation_brake_start = -1;
+        e->perturbation_brake_duration = 0;
+    }
+
+    if (!env->use_perturbation_training || env->perturbation_fraction <= 0.0f) {
+        return;
+    }
+
+    int num_to_perturb = (int)(env->perturbation_fraction * env->active_agent_count);
+    if (num_to_perturb < 1) num_to_perturb = 1;
+    if (num_to_perturb > env->active_agent_count) num_to_perturb = env->active_agent_count;
+
+    // Fisher-Yates shuffle of agent indices, then pick first num_to_perturb
+    int *shuffled = (int *)malloc(env->active_agent_count * sizeof(int));
+    for (int i = 0; i < env->active_agent_count; i++) {
+        shuffled[i] = i;
+    }
+    for (int i = env->active_agent_count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        int tmp = shuffled[i];
+        shuffled[i] = shuffled[j];
+        shuffled[j] = tmp;
+    }
+
+    for (int k = 0; k < num_to_perturb; k++) {
+        int active_idx = shuffled[k];
+        int agent_idx = env->active_agent_indices[active_idx];
+        Entity *e = &env->entities[agent_idx];
+
+        // Randomly select perturbation type (1 to NUM_PERTURBATION_TYPES)
+        int ptype = (rand() % NUM_PERTURBATION_TYPES) + 1;
+        e->perturbation_type = ptype;
+
+        switch (ptype) {
+        case PERTURB_AGGRESSIVE:
+            e->perturbation_speed_mult = env->perturb_aggressive_speed;
+            break;
+        case PERTURB_SLOW:
+            e->perturbation_speed_mult = env->perturb_slow_speed;
+            break;
+        case PERTURB_LANE_DRIFT:
+            // Random sign for heading offset
+            e->perturbation_heading_off = (rand() % 2 == 0) ? env->perturb_heading_offset : -env->perturb_heading_offset;
+            break;
+        case PERTURB_SUDDEN_BRAKE:
+            e->perturbation_brake_duration = env->perturb_brake_duration;
+            // Random brake start between 20% and 70% of episode length
+            {
+                int min_start = (int)(env->episode_length * 0.2f);
+                int max_start = (int)(env->episode_length * 0.7f);
+                if (max_start <= min_start) max_start = min_start + 1;
+                e->perturbation_brake_start = env->init_steps + min_start + (rand() % (max_start - min_start));
+            }
+            break;
+        default:
+            e->perturbation_type = PERTURB_NONE;
+            break;
+        }
+    }
+
+    free(shuffled);
+}
+
 int is_waypoint_within_reach(Entity *agent, int traj_idx, float threshold) {
     if (traj_idx >= agent->array_size || !agent->traj_valid[traj_idx]) {
         return 0;
@@ -505,6 +616,18 @@ float compute_speed_guidance_reward(Entity *agent, int timestep, float weight) {
     float ref_vy = agent->traj_vy[timestep];
     float ref_speed = sqrtf(ref_vx * ref_vx + ref_vy * ref_vy);
 
+    // Apply perturbation: modify reference speed for perturbed agents
+    if (agent->perturbation_type == PERTURB_AGGRESSIVE || agent->perturbation_type == PERTURB_SLOW) {
+        ref_speed *= agent->perturbation_speed_mult;
+    } else if (agent->perturbation_type == PERTURB_SUDDEN_BRAKE) {
+        // During brake window, target speed is 0
+        if (agent->perturbation_brake_start >= 0 &&
+            timestep >= agent->perturbation_brake_start &&
+            timestep < agent->perturbation_brake_start + agent->perturbation_brake_duration) {
+            ref_speed = 0.0f;
+        }
+    }
+
     // Get actual speed
     float actual_speed = sqrtf(agent->vx * agent->vx + agent->vy * agent->vy);
 
@@ -525,6 +648,11 @@ float compute_heading_guidance_reward(Entity *agent, int timestep, float weight)
 
     // Get reference heading at current timestep
     float ref_heading = agent->traj_heading[timestep];
+
+    // Apply perturbation: add heading offset for lane drifters
+    if (agent->perturbation_type == PERTURB_LANE_DRIFT) {
+        ref_heading += agent->perturbation_heading_off;
+    }
 
     // Get actual heading
     float actual_heading = agent->heading;
@@ -614,6 +742,12 @@ Entity *load_map_binary(const char *filename, Drive *env) {
             entities[i].waypoints_hit_count = 0;
             entities[i].total_valid_waypoints = 0;
             entities[i].route_progress = 0.0f;
+            // Initialize perturbation fields
+            entities[i].perturbation_type = PERTURB_NONE;
+            entities[i].perturbation_speed_mult = 1.0f;
+            entities[i].perturbation_heading_off = 0.0f;
+            entities[i].perturbation_brake_start = -1;
+            entities[i].perturbation_brake_duration = 0;
         } else {
             // Roads don't use these arrays
             entities[i].traj_vx = NULL;
@@ -627,6 +761,11 @@ Entity *load_map_binary(const char *filename, Drive *env) {
             entities[i].waypoints_hit_count = 0;
             entities[i].total_valid_waypoints = 0;
             entities[i].route_progress = 0.0f;
+            entities[i].perturbation_type = PERTURB_NONE;
+            entities[i].perturbation_speed_mult = 1.0f;
+            entities[i].perturbation_heading_off = 0.0f;
+            entities[i].perturbation_brake_start = -1;
+            entities[i].perturbation_brake_duration = 0;
         }
         // Read array data
         fread(entities[i].traj_x, sizeof(float), size, file);
@@ -2234,6 +2373,10 @@ void c_reset(Drive *env) {
 
         compute_agent_metrics(env, agent_idx);
     }
+
+    // Assign perturbations for adversarial training (re-rolled each reset)
+    assign_perturbations(env);
+
     compute_observations(env);
 }
 
