@@ -184,8 +184,11 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     if (ini_parse(env->ini_file, handler, &conf) < 0) {
         printf("Error while loading %s", env->ini_file);
     }
-    if (kwargs && PyDict_GetItemString(kwargs, "episode_length")) {
-        conf.episode_length = (int)unpack(kwargs, "episode_length");
+    {
+        PyObject *ep_obj = kwargs ? PyDict_GetItemString(kwargs, "episode_length") : NULL;
+        if (ep_obj && ep_obj != Py_None) {
+            conf.episode_length = (int)unpack(kwargs, "episode_length");
+        }
     }
     if (conf.episode_length <= 0) {
         PyErr_SetString(PyExc_ValueError, "episode_length must be > 0 (set in INI or kwargs)");
