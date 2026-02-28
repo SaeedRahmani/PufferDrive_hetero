@@ -1,0 +1,11 @@
+{
+  "label": "Adversarial",
+  "subfolder": "adversarial",
+  "source_project_dir": "/users/saeani/src/pufferdrive_adversarial",
+  "run_id": "rc1t2i6i",
+  "wandb_entity": "s-rahmani-tu-delft",
+  "wandb_project": "pufferlib",
+  "wandb_run_path": "s-rahmani-tu-delft/pufferlib/rc1t2i6i",
+  "total_steps": 6017253376,
+  "max_epoch": 11445
+}

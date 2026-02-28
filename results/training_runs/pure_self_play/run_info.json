@@ -1,0 +1,11 @@
+{
+  "label": "Pure Self-Play",
+  "subfolder": "pure_self_play",
+  "source_project_dir": "/users/saeani/src/pufferdrive_puresp",
+  "run_id": "91ocj1g6",
+  "wandb_entity": "s-rahmani-tu-delft",
+  "wandb_project": "pufferlib",
+  "wandb_run_path": "s-rahmani-tu-delft/pufferlib/91ocj1g6",
+  "total_steps": 6017253376,
+  "max_epoch": 11445
+}

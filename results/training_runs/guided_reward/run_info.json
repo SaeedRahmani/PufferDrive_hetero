@@ -1,0 +1,11 @@
+{
+  "label": "Guided Reward",
+  "subfolder": "guided_reward",
+  "source_project_dir": "/users/saeani/src/pufferdrive_guidedreward",
+  "run_id": "vujl69hw",
+  "wandb_entity": "s-rahmani-tu-delft",
+  "wandb_project": "pufferlib",
+  "wandb_run_path": "s-rahmani-tu-delft/pufferlib/vujl69hw",
+  "total_steps": 6017253376,
+  "max_epoch": 11445
+}
