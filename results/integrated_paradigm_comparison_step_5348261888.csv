@@ -1,0 +1,56 @@
+Group,Metric,wandb_key,Adversarial,Guided Reward,Pure Self-Play
+WOSAC Realism,Meta Score (mean),eval/wosac_realism_meta_score_mean,0.7248955223880598,0.7216060606060607,0.6774912280701755
+WOSAC Realism,Meta Score (std),eval/wosac_realism_meta_score_std,0.1071227184019759,0.1360351627380417,0.132367470486928
+WOSAC Realism,Kinematic Metrics,eval/wosac_kinematic_metrics,0.4054123927871952,0.3906671765734264,0.2819394919590643
+WOSAC Realism,Interactive Metrics,eval/wosac_interactive_metrics,0.7051459564920495,0.7198023989898991,0.6686297270955165
+WOSAC Realism,Map-Based Metrics,eval/wosac_map_based_metrics,0.8122605749532879,0.7808424388111889,0.770550365497076
+WOSAC Realism,Likelihood Collision,eval/wosac_likelihood_collision,0.8783582089552239,0.9148939393939396,0.8963157894736842
+WOSAC Realism,Likelihood TTC,eval/wosac_likelihood_ttc,0.8677014925373135,0.8478484848484849,0.8010526315789473
+WOSAC Realism,Likelihood Dist-to-NO,eval/wosac_likelihood_dist_to_no,0.3497014925373135,0.4023939393939394,0.3086842105263158
+WOSAC Realism,ADE,eval/wosac_ade,1.4745970149253729,1.8202272727272728,10.713894736842104
+WOSAC Realism,Min ADE,eval/wosac_min_ade,1.175223880597015,1.2054545454545456,10.136631578947366
+WOSAC Realism,Total Num Agents,eval/wosac_total_num_agents,216.0,193.0,163.0
+WOSAC Realism,Num Collisions (sim),eval/num_collisions_sim,0.0885074626865671,0.0870757575757575,0.0852982456140351
+WOSAC Realism,Num Collisions (ref),eval/num_collisions_ref,0.0286119402985074,0.0409393939393939,0.0328947368421052
+Evaluation,Self-Play Score,eval/sp_score,0.9921875,0.9921875,0.9765625
+Evaluation,Self-Play Collision Rate,eval/sp_collision_rate,0.03125,0.046875,0.03125
+Evaluation,Human-Replay Score,eval/hr_score,0.984375,0.9765625,0.9375
+Evaluation,Human-Replay Collision Rate,eval/hr_collision_rate,0.0390625,0.0,0.1640625
+Evaluation,Human Log Probability,eval/human_log_prob,-11.467432022094728,-12.126953125,-25.075489044189453
+Evaluation,Δ Score,eval/Δ_score,0.0078125,0.015625,0.0390625
+Evaluation,Δ Collision Rate,eval/Δ_cr,0.0078125,-0.046875,0.1328125
+Evaluation,Δ Offroad Rate,eval/Δ_or,-0.015625,0.0078125,0.0234375
+Evaluation,Δ Completion,eval/Δ_comp,0.0078125,0.0078125,0.0390625
+Environment,Collision Rate,environment/collision_rate,0.0379638671875,0.01324462890625,0.03314208984375
+Environment,Collisions/Agent,environment/collisions_per_agent,0.16357421875,0.05718994140625,0.0587158203125
+Environment,Offroad Rate,environment/offroad_rate,0.05279541015625,0.0125732421875,0.03460693359375
+Environment,Offroad/Agent,environment/offroad_per_agent,0.154541015625,0.04925537109375,0.04962158203125
+Environment,Completion Rate,environment/completion_rate,0.9820556640625,0.99169921875,0.99169921875
+Environment,Goals Reached/Episode,environment/goals_reached_this_episode,0.9820556640625,0.99169921875,0.99169921875
+Environment,Score,environment/score,0.976318359375,0.98687744140625,0.98834228515625
+Environment,Episode Return,environment/episode_return,-0.7149517610669136,-0.4707155432552099,1.16729736328125
+Environment,DNF Rate,environment/dnf_rate,0.01324462890625,0.0069580078125,0.0059814453125
+Environment,Lane Alignment Rate,environment/lane_alignment_rate,0.884521484375,0.87628173828125,0.51397705078125
+Environment,Speed at Goal,environment/speed_at_goal,8.975684493780136,8.68747740983963,18.1753443479538
+Environment,Perturbed Agent Count,environment/perturbed_agent_count,0.28106689453125,0.0,0.0
+Environment,Perturbed Collision Count,environment/perturbed_collision_count,0.009521484375,0.0,0.0
+Environment,Unperturbed Collision Count,environment/unperturbed_collision_count,0.0284423828125,0.01324462890625,0.03314208984375
+Losses,Policy Loss,losses/policy_loss,-0.1608367208391428,-0.0366830007405951,-0.0584286574739962
+Losses,Value Loss,losses/value_loss,1.3056020066142082,0.02665452263318,0.0072070228634402
+Losses,Entropy,losses/entropy,0.6024259328842163,0.6208345852792263,0.7339181192219257
+Losses,Approx KL,losses/approx_kl,0.0014592079860449,0.001995219841774,0.0005999647145245
+Losses,Old Approx KL,losses/old_approx_kl,0.0013519600652216,0.0018600812945805,0.0005806772105643
+Losses,Clip Fraction,losses/clipfrac,0.0142650604248046,0.0216579437255859,0.0043869018554687
+Losses,Explained Variance,losses/explained_variance,0.6442995071411133,0.9783855080604552,0.9014827013015748
+Losses,Importance,losses/importance,1.000107228755951,1.000135149806738,1.000019270926714
+Losses,Human NLL,losses/human_nll,-11.080282211303713,-11.377988815307615,-24.955997467041016
+Training,Agent Steps,agent_steps,5348261888.0,5348261888.0,5348261888.0
+Training,Epoch (update),epoch,10201.0,10201.0,10201.0
+Training,Learning Rate,learning_rate,8.894563831959061e-05,8.894563831959061e-05,8.894563831959061e-05
+Training,Steps Per Second,SPS,104275.90988551252,97674.80264821617,116513.85827624577
+
+Policy Checkpoints
+Paradigm,Checkpoint Path,Checkpoint Epoch
+Adversarial,/data/lynx/saeani/pufferdrive_adversarial/results/training_runs/adversarial/checkpoints/model_puffer_drive_010201.pt,10201
+Guided Reward,/data/lynx/saeani/pufferdrive_adversarial/results/training_runs/guided_reward/checkpoints/model_puffer_drive_010201.pt,10201
+Pure Self-Play,/data/lynx/saeani/pufferdrive_adversarial/results/training_runs/pure_self_play/checkpoints/model_puffer_drive_010201.pt,10201

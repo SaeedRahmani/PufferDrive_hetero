@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
 """
-Compare Training Paradigms — Metrics & Policy Finder
-=====================================================
-For a given training step, this script:
+Compare Training Paradigms — Integrated (Local Files Only)
+==========================================================
+Same analysis as ``compare_training_paradigms.py`` but reads exclusively from
+the centralized ``results/training_runs/`` directory created by
+``collect_training_results.py``.  **No wandb API required.**
 
-1. Retrieves metrics from Weights & Biases for the *latest* run in each of
-   the three project directories (adversarial, guided reward, pure self-play).
-   Metrics include WOSAC realism scores, collision/offroad/completion rates,
-   loss values, and evaluation deltas.
-
-2. Identifies the exact policy checkpoint (.pt file) corresponding to that
-   step in each project, so it can be used for downstream evaluation.
+Data sources (per paradigm subdirectory):
+  • ``wandb/history.csv``       — exported metric timeseries
+  • ``wandb/wandb-summary.json`` — final run summary (for step↔epoch mapping)
+  • ``checkpoints/``            — model checkpoint .pt files
+  • ``run_info.json``           — paradigm metadata (run ID, label, etc.)
 
 Usage
 -----
-    # Default step (5,348,261,888):
-    python scripts/compare_training_paradigms.py
+    # Default step, default results directory
+    python scripts/compare_training_paradigms_integrated.py
 
-    # Custom step:
-    python scripts/compare_training_paradigms.py --step 4017094656
+    # Custom step
+    python scripts/compare_training_paradigms_integrated.py --step 4017094656
 
-    # Specify a custom wandb entity:
-    python scripts/compare_training_paradigms.py --wandb-entity my-entity
+    # Custom results directory
+    python scripts/compare_training_paradigms_integrated.py \\
+        --results-dir results/training_runs
 
-    # Specify custom project root:
-    python scripts/compare_training_paradigms.py --root /users/saeani/src
+    # Save to CSV
+    python scripts/compare_training_paradigms_integrated.py \\
+        --csv results/paradigm_comparison_step_5348261888.csv
 
-    # Save output to a CSV file:
-    python scripts/compare_training_paradigms.py --csv results.csv
+Pipeline
+--------
+    1. python scripts/collect_training_results.py          # copy data locally
+    2. python scripts/compare_training_paradigms_integrated.py  # analyze
 """
 
 from __future__ import annotations
@@ -35,24 +39,28 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import json
 import os
 import re
 import sys
-from pathlib import Path
 from typing import Any
 
-import wandb
+# Try to import pandas for faster history reading; fall back to csv module
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
 
 
-# ── Project definitions ──────────────────────────────────────────────────────
-# Each entry maps a human-readable label → directory name under --root.
-PROJECT_DIRS: dict[str, str] = {
-    "Adversarial":    "pufferdrive_adversarial",
-    "Guided Reward":  "pufferdrive_guidedreward",
-    "Pure Self-Play": "pufferdrive_puresp",
-}
+# ── Paradigm subdirectories (same order as the collect script) ───────────────
+PARADIGMS: list[tuple[str, str]] = [
+    ("adversarial",   "Adversarial"),
+    ("guided_reward", "Guided Reward"),
+    ("pure_self_play", "Pure Self-Play"),
+]
 
-# ── Metrics we care about (wandb key → display name) ────────────────────────
+# ── Metrics (same as the wandb-backed script, for consistency) ───────────────
 #
 # WOSAC vs Environment vs Evaluation — what's the difference?
 #
@@ -139,76 +147,159 @@ METRIC_GROUPS: dict[str, dict[str, str]] = {
     },
 }
 
-# Flat list of all wandb keys we request
 ALL_METRIC_KEYS: list[str] = [
-    key
-    for group in METRIC_GROUPS.values()
-    for key in group
+    key for group in METRIC_GROUPS.values() for key in group
 ]
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── History reading ──────────────────────────────────────────────────────────
 
-def find_latest_run_id(project_dir: str) -> str:
-    """Return the run ID of the latest wandb run in *project_dir*.
+def read_history_pandas(csv_path: str) -> "pd.DataFrame":
+    """Read history CSV using pandas (fast)."""
+    df = pd.read_csv(csv_path, low_memory=False)
+    return df
 
-    Strategy (robust, avoids picking an old run):
-      1. Follow the ``wandb/latest-run`` symlink created by wandb.
-      2. Fall back to lexicographically sorting ``run-*`` directories
-         (the timestamp prefix guarantees the latest sorts last).
+
+def read_history_stdlib(csv_path: str) -> list[dict[str, Any]]:
+    """Read history CSV using the stdlib csv module (no pandas needed)."""
+    rows: list[dict[str, Any]] = []
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            converted: dict[str, Any] = {}
+            for k, v in row.items():
+                if v == "" or v is None:
+                    converted[k] = None
+                else:
+                    try:
+                        converted[k] = float(v)
+                        # Promote to int if exact
+                        if converted[k] == int(converted[k]) and "." not in v:
+                            converted[k] = int(converted[k])
+                    except (ValueError, OverflowError):
+                        converted[k] = v
+            rows.append(converted)
+    return rows
+
+
+def find_closest_row_pandas(
+    df: "pd.DataFrame", target_step: int, step_col: str = "_step"
+) -> dict[str, Any]:
+    """Return the single row closest to *target_step* as a dict.
+
+    This mirrors the logic in the original wandb-API script exactly:
+    find ONE closest row and read ALL metrics from it.  The exported
+    ``history.csv`` was created with the same ``keys`` parameter so the
+    server-side downsampling matches, ensuring identical values.
     """
-    wandb_dir = os.path.join(project_dir, "wandb")
+    if step_col not in df.columns:
+        for alt in ["agent_steps", "global_step", "step"]:
+            if alt in df.columns:
+                step_col = alt
+                break
+        else:
+            return {}
 
-    # --- strategy 1: symlink ---
-    latest_link = os.path.join(wandb_dir, "latest-run")
-    if os.path.islink(latest_link):
-        target = os.readlink(latest_link)  # e.g. "run-20260226_163532-rc1t2i6i"
-        run_id = target.rsplit("-", 1)[-1]
-        return run_id
+    df = df.dropna(subset=[step_col]).copy()
+    if df.empty:
+        return {}
 
-    # --- strategy 2: sort run directories ---
-    run_dirs = sorted(glob.glob(os.path.join(wandb_dir, "run-*")))
-    if not run_dirs:
-        raise FileNotFoundError(
-            f"No wandb run directories found in {wandb_dir}"
-        )
-    latest_dir = os.path.basename(run_dirs[-1])
-    run_id = latest_dir.rsplit("-", 1)[-1]
-    return run_id
+    df["_diff"] = (df[step_col] - target_step).abs()
+    idx = df["_diff"].idxmin()
+    row = df.loc[idx]
+
+    result: dict[str, Any] = {}
+    for key in ["_step", step_col] + ALL_METRIC_KEYS:
+        if key in row.index:
+            val = row[key]
+            if hasattr(val, "item"):
+                val = val.item()
+            if isinstance(val, float) and val != val:
+                val = None
+            result[key] = val
+        else:
+            result[key] = None
+
+    result["_step_diff"] = int(row["_diff"])
+    return result
 
 
-def find_experiment_dir(project_dir: str, run_id: str) -> str | None:
-    """Return the experiment checkpoint directory for *run_id*."""
-    exp_base = os.path.join(project_dir, "experiments")
-    candidate = os.path.join(exp_base, f"puffer_drive_{run_id}")
-    if os.path.isdir(candidate):
-        return candidate
-    # Try to find any directory matching the run_id
-    for d in glob.glob(os.path.join(exp_base, f"*{run_id}*")):
-        if os.path.isdir(d):
-            return d
-    return None
+def find_closest_row_stdlib(
+    rows: list[dict[str, Any]], target_step: int, step_col: str = "_step"
+) -> dict[str, Any]:
+    """Return the row closest to target_step."""
+    if not rows:
+        return {}
 
+    # Determine step column
+    if step_col not in rows[0]:
+        for alt in ["agent_steps", "global_step", "step"]:
+            if alt in rows[0] and rows[0][alt] is not None:
+                step_col = alt
+                break
+        else:
+            return {}
+
+    # Find the single closest row (mirrors the original wandb-API script)
+    best_row: dict[str, Any] = {}
+    best_diff = float("inf")
+
+    for row in rows:
+        step = row.get(step_col)
+        if step is None:
+            continue
+        step = float(step)
+        diff = abs(step - target_step)
+        if diff < best_diff:
+            best_diff = diff
+            best_row = row
+
+    if not best_row:
+        return {}
+
+    result: dict[str, Any] = {}
+    for key in ["_step", step_col] + ALL_METRIC_KEYS:
+        result[key] = best_row.get(key)
+
+    result["_step_diff"] = int(best_diff)
+    return result
+
+
+def load_metrics_at_step(
+    paradigm_dir: str, target_step: int
+) -> dict[str, Any]:
+    """Load metrics at *target_step* from the local history CSV."""
+    history_csv = os.path.join(paradigm_dir, "wandb", "history.csv")
+
+    if not os.path.isfile(history_csv):
+        print(f"    ⚠  history.csv not found in {paradigm_dir}")
+        return {}
+
+    if HAS_PANDAS:
+        df = read_history_pandas(history_csv)
+        return find_closest_row_pandas(df, target_step)
+    else:
+        rows = read_history_stdlib(history_csv)
+        return find_closest_row_stdlib(rows, target_step)
+
+
+# ── Checkpoint finder ────────────────────────────────────────────────────────
 
 def find_checkpoint_for_step(
-    exp_dir: str, target_step: int, total_steps: int, max_epoch: int
+    ckpt_dir: str, target_step: int, summary: dict[str, Any]
 ) -> tuple[str | None, int | None]:
-    """Return (checkpoint_path, epoch) for the checkpoint closest to *target_step*.
+    """Return (path, epoch) of the checkpoint closest to target_step."""
+    total_steps = summary.get("agent_steps", summary.get("_step", 0))
+    max_epoch = summary.get("epoch", 0)
 
-    Checkpoints are named ``model_puffer_drive_NNNNNN.pt`` where NNNNNN is the
-    epoch (update number).  The mapping is:
-        step ≈ epoch × (total_steps / max_epoch)
-    """
-    if max_epoch == 0 or total_steps == 0:
+    if not max_epoch or not total_steps:
         return None, None
 
     steps_per_epoch = total_steps / max_epoch
     target_epoch = round(target_step / steps_per_epoch)
 
-    # Gather available checkpoints
-    pattern = os.path.join(exp_dir, "model_puffer_drive_*.pt")
     ckpts: list[tuple[int, str]] = []
-    for path in glob.glob(pattern):
+    for path in glob.glob(os.path.join(ckpt_dir, "model_puffer_drive_*.pt")):
         m = re.search(r"model_puffer_drive_(\d+)\.pt$", path)
         if m:
             ckpts.append((int(m.group(1)), path))
@@ -216,48 +307,15 @@ def find_checkpoint_for_step(
     if not ckpts:
         return None, None
 
-    # Find closest epoch
     ckpts.sort(key=lambda c: abs(c[0] - target_epoch))
-    best_epoch, best_path = ckpts[0]
-    return best_path, best_epoch
+    return ckpts[0][1], ckpts[0][0]
 
 
-def fetch_metrics_at_step(
-    run: "wandb.apis.public.Run",
-    target_step: int,
-    metric_keys: list[str],
-) -> dict[str, Any]:
-    """Fetch metrics from wandb history at (or closest to) *target_step*.
-
-    Uses ``run.history(samples=…)`` which is server-side downsampled and fast.
-    """
-    keys_to_fetch = ["_step"] + metric_keys
-    df = run.history(keys=keys_to_fetch, samples=10000)
-
-    if df.empty:
-        return {}
-
-    # Find the row closest to target_step
-    df = df.copy()
-    df["_diff"] = (df["_step"] - target_step).abs()
-    closest_idx = df["_diff"].idxmin()
-    row = df.loc[closest_idx]
-
-    result: dict[str, Any] = {}
-    for key in keys_to_fetch:
-        val = row.get(key)
-        # Convert numpy types to native Python
-        if hasattr(val, "item"):
-            val = val.item()
-        result[key] = val
-
-    result["_step_diff"] = int(row["_diff"])
-    return result
-
+# ── Formatting ───────────────────────────────────────────────────────────────
 
 def format_value(val: Any) -> str:
     """Pretty-print a metric value."""
-    if val is None or (isinstance(val, float) and val != val):  # NaN check
+    if val is None or (isinstance(val, float) and val != val):
         return "—"
     if isinstance(val, float):
         if abs(val) < 1e-6 and val != 0:
@@ -274,7 +332,8 @@ def format_value(val: Any) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare training paradigms at a specific training step.",
+        description="Compare training paradigms using locally collected results "
+                    "(no wandb API required).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -285,22 +344,11 @@ def main() -> None:
         help="Target training step (default: 5,348,261,888).",
     )
     parser.add_argument(
-        "--root",
+        "--results-dir",
         type=str,
-        default="/users/saeani/src",
-        help="Root directory containing the three project folders.",
-    )
-    parser.add_argument(
-        "--wandb-entity",
-        type=str,
-        default="s-rahmani-tu-delft",
-        help="Weights & Biases entity (username or team).",
-    )
-    parser.add_argument(
-        "--wandb-project",
-        type=str,
-        default="pufferlib",
-        help="Weights & Biases project name.",
+        default="results/training_runs",
+        help="Path to the collected results directory "
+             "(output of collect_training_results.py).",
     )
     parser.add_argument(
         "--csv",
@@ -311,64 +359,68 @@ def main() -> None:
     args = parser.parse_args()
 
     target_step = args.step
-    root = args.root
+
+    # Resolve results-dir relative to the workspace
+    workspace_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.isabs(args.results_dir):
+        results_dir = os.path.join(workspace_dir, args.results_dir)
+    else:
+        results_dir = args.results_dir
+
+    if not os.path.isdir(results_dir):
+        print(f"\n  ERROR: Results directory not found: {results_dir}")
+        print(f"  Run  collect_training_results.py  first.\n")
+        sys.exit(1)
 
     print(f"\n{'═' * 80}")
     print(f"  TRAINING PARADIGM COMPARISON @ step {target_step:,}")
+    print(f"  (local data from {results_dir})")
     print(f"{'═' * 80}\n")
 
-    api = wandb.Api()
-
-    # Collect results for each paradigm  { label -> {metric_key: value} }
     all_results: dict[str, dict[str, Any]] = {}
     policy_paths: dict[str, str] = {}
     checkpoint_epochs: dict[str, int] = {}
 
-    for label, dirname in PROJECT_DIRS.items():
-        project_dir = os.path.join(root, dirname)
+    for subfolder, label in PARADIGMS:
+        paradigm_dir = os.path.join(results_dir, subfolder)
 
-        if not os.path.isdir(project_dir):
-            print(f"  ⚠  Directory not found: {project_dir}  — skipping {label}")
+        if not os.path.isdir(paradigm_dir):
+            print(f"  ⚠  Directory not found: {paradigm_dir}  — skipping {label}\n")
             continue
 
-        # ── Find latest run ──────────────────────────────────────────────
-        try:
-            run_id = find_latest_run_id(project_dir)
-        except FileNotFoundError as exc:
-            print(f"  ⚠  {exc}  — skipping {label}")
-            continue
+        # Load run_info.json for metadata
+        info_path = os.path.join(paradigm_dir, "run_info.json")
+        run_info: dict[str, Any] = {}
+        if os.path.isfile(info_path):
+            with open(info_path) as f:
+                run_info = json.load(f)
 
-        run_path = f"{args.wandb_entity}/{args.wandb_project}/{run_id}"
+        run_id = run_info.get("run_id", "unknown")
+
         print(f"  {label}")
-        print(f"    Directory : {project_dir}")
-        print(f"    wandb run : {run_path}")
+        print(f"    Directory : {paradigm_dir}")
+        print(f"    Run ID    : {run_id}")
 
-        # ── Fetch metrics from wandb ─────────────────────────────────────
-        try:
-            run = api.run(run_path)
-        except Exception as exc:
-            print(f"    ⚠  Could not load wandb run: {exc}")
-            continue
-
-        metrics = fetch_metrics_at_step(run, target_step, ALL_METRIC_KEYS)
+        # ── Load metrics from history.csv ────────────────────────────────
+        metrics = load_metrics_at_step(paradigm_dir, target_step)
         actual_step = metrics.get("_step")
         step_diff = metrics.get("_step_diff", "?")
-        print(f"    Actual step returned: {format_value(actual_step)}  "
+        print(f"    Actual step: {format_value(actual_step)}  "
               f"(Δ = {format_value(step_diff)} from target)")
 
         all_results[label] = metrics
 
         # ── Find checkpoint ──────────────────────────────────────────────
-        # We need total_steps and max_epoch from the run summary to map
-        # step → epoch.
-        summary = dict(run.summary)
-        total_steps = summary.get("agent_steps", summary.get("_step", 0))
-        max_epoch = summary.get("epoch", 0)
+        ckpt_dir = os.path.join(paradigm_dir, "checkpoints")
+        summary_path = os.path.join(paradigm_dir, "wandb", "wandb-summary.json")
+        summary: dict[str, Any] = {}
+        if os.path.isfile(summary_path):
+            with open(summary_path) as f:
+                summary = json.load(f)
 
-        exp_dir = find_experiment_dir(project_dir, run_id)
-        if exp_dir:
+        if os.path.isdir(ckpt_dir):
             ckpt_path, ckpt_epoch = find_checkpoint_for_step(
-                exp_dir, target_step, total_steps, max_epoch
+                ckpt_dir, target_step, summary
             )
             if ckpt_path:
                 policy_paths[label] = ckpt_path
@@ -376,9 +428,9 @@ def main() -> None:
                 print(f"    Checkpoint : {ckpt_path}")
                 print(f"    Epoch      : {ckpt_epoch}")
             else:
-                print(f"    ⚠  No checkpoint found in {exp_dir}")
+                print(f"    ⚠  No checkpoints found in {ckpt_dir}")
         else:
-            print(f"    ⚠  Experiment directory not found for run {run_id}")
+            print(f"    ⚠  Checkpoints directory not found")
 
         print()
 
@@ -386,7 +438,7 @@ def main() -> None:
         print("No results collected.  Exiting.")
         sys.exit(1)
 
-    # ── Print comparison table ───────────────────────────────────────────
+    # ── Comparison table ─────────────────────────────────────────────────
     labels = list(all_results.keys())
     col_width = max(22, *(len(l) for l in labels)) + 2
 
@@ -425,10 +477,6 @@ def main() -> None:
         if path:
             print(f"  {label}:")
             print(f"    {path}")
-            # Also print the eval command
-            print(f"    Eval command:")
-            print(f"      puffer eval puffer_drive --eval.wosac-realism-eval True "
-                  f"--load-model-path {path}")
         else:
             print(f"  {label}: ⚠  No checkpoint found")
         print()
@@ -436,22 +484,22 @@ def main() -> None:
     # ── Optional CSV export ──────────────────────────────────────────────
     if args.csv:
         csv_path = args.csv
+        # Ensure directory exists
+        csv_dir = os.path.dirname(csv_path)
+        if csv_dir:
+            os.makedirs(csv_dir, exist_ok=True)
+
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            # Header
             writer.writerow(["Group", "Metric", "wandb_key"] + labels)
-            # Data
             for group_name, group_metrics in METRIC_GROUPS.items():
                 for key, display_name in group_metrics.items():
                     row_vals = []
                     for label in labels:
                         val = all_results[label].get(key)
-                        row_vals.append(
-                            val if val is not None else ""
-                        )
+                        row_vals.append(val if val is not None else "")
                     writer.writerow([group_name, display_name, key] + row_vals)
 
-            # Policy paths and checkpoint epochs
             writer.writerow([])
             writer.writerow(["Policy Checkpoints"])
             writer.writerow(["Paradigm", "Checkpoint Path", "Checkpoint Epoch"])
