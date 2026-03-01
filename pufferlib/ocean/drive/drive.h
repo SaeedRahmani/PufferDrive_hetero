@@ -187,6 +187,7 @@ struct Log {
     float perturbed_agent_count;
     float perturbed_collision_count;
     float unperturbed_collision_count;
+    float npc_adversarial_count;
 };
 
 typedef struct Entity Entity;
@@ -371,6 +372,10 @@ struct Drive {
     float perturb_slow_speed;        // Speed multiplier for slow agents (e.g., 0.5)
     float perturb_heading_offset;    // Heading offset in radians for lane drifters (e.g., 0.1)
     int perturb_brake_duration;      // Duration of sudden brake in steps (e.g., 10)
+    // NPC adversarial training config
+    int use_npc_adversarial;         // Boolean: whether to inject NPC adversaries among expert_static agents
+    float npc_adversarial_fraction;  // Fraction of expert_static agents to make adversarial (0.0 to 1.0)
+    float npc_lateral_offset;        // Lateral offset in meters for NPC lane drift behavior (e.g., 1.5)
     char *map_name;
     float world_mean_x;
     float world_mean_y;
@@ -451,6 +456,17 @@ void add_log(Drive *env) {
             if (collided) {
                 env->log.unperturbed_collision_count += 1.0f;
             }
+        }
+
+        // NPC adversarial count: count once per agent so averaging by n recovers the per-env value
+        if (env->use_npc_adversarial) {
+            int npc_count = 0;
+            for (int j = 0; j < env->expert_static_agent_count; j++) {
+                if (env->entities[env->expert_static_agent_indices[j]].perturbation_type != PERTURB_NONE) {
+                    npc_count++;
+                }
+            }
+            env->log.npc_adversarial_count += (float)npc_count;
         }
 
         env->log.n += 1;
@@ -564,6 +580,233 @@ void assign_perturbations(Drive *env) {
     }
 
     free(shuffled);
+}
+
+// Assign NPC adversarial behaviors to a fraction of expert_static agents on reset.
+// These agents follow modified trajectories (time-warped, laterally offset, or braking)
+// but receive NO reward/gradient — they serve as physical obstacles for policy agents.
+void assign_npc_adversaries(Drive *env) {
+    // Clear perturbation info on all expert_static agents
+    for (int i = 0; i < env->expert_static_agent_count; i++) {
+        int agent_idx = env->expert_static_agent_indices[i];
+        Entity *e = &env->entities[agent_idx];
+        e->perturbation_type = PERTURB_NONE;
+        e->perturbation_speed_mult = 1.0f;
+        e->perturbation_heading_off = 0.0f;
+        e->perturbation_brake_start = -1;
+        e->perturbation_brake_duration = 0;
+    }
+
+    if (!env->use_npc_adversarial || env->npc_adversarial_fraction <= 0.0f ||
+        env->expert_static_agent_count == 0) {
+        return;
+    }
+
+    int num_to_perturb = (int)(env->npc_adversarial_fraction * env->expert_static_agent_count);
+    if (num_to_perturb < 1) num_to_perturb = 1;
+    if (num_to_perturb > env->expert_static_agent_count)
+        num_to_perturb = env->expert_static_agent_count;
+
+    // Fisher-Yates shuffle of expert_static indices, then pick first num_to_perturb
+    int *shuffled = (int *)malloc(env->expert_static_agent_count * sizeof(int));
+    for (int i = 0; i < env->expert_static_agent_count; i++) {
+        shuffled[i] = i;
+    }
+    for (int i = env->expert_static_agent_count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        int tmp = shuffled[i];
+        shuffled[i] = shuffled[j];
+        shuffled[j] = tmp;
+    }
+
+    for (int k = 0; k < num_to_perturb; k++) {
+        int expert_idx = shuffled[k];
+        int agent_idx = env->expert_static_agent_indices[expert_idx];
+        Entity *e = &env->entities[agent_idx];
+
+        // Randomly select perturbation type (1 to NUM_PERTURBATION_TYPES)
+        int ptype = (rand() % NUM_PERTURBATION_TYPES) + 1;
+        e->perturbation_type = ptype;
+
+        switch (ptype) {
+        case PERTURB_AGGRESSIVE:
+            e->perturbation_speed_mult = env->perturb_aggressive_speed;
+            break;
+        case PERTURB_SLOW:
+            e->perturbation_speed_mult = env->perturb_slow_speed;
+            break;
+        case PERTURB_LANE_DRIFT:
+            // Use npc_lateral_offset as the lateral displacement in meters
+            e->perturbation_heading_off =
+                (rand() % 2 == 0) ? env->npc_lateral_offset : -env->npc_lateral_offset;
+            break;
+        case PERTURB_SUDDEN_BRAKE: {
+            e->perturbation_brake_duration = env->perturb_brake_duration;
+            int episode_duration = env->episode_length - env->init_steps;
+            if (episode_duration < env->perturb_brake_duration + 1) {
+                e->perturbation_type = PERTURB_NONE;
+                e->perturbation_brake_duration = 0;
+            } else {
+                int min_start = env->init_steps + (int)(episode_duration * 0.2f);
+                int max_start = env->init_steps + (int)(episode_duration * 0.7f);
+                int latest_possible = env->episode_length - env->perturb_brake_duration;
+                if (max_start > latest_possible) max_start = latest_possible;
+                if (min_start > latest_possible) min_start = latest_possible;
+                if (max_start < min_start) max_start = min_start;
+                e->perturbation_brake_start = min_start + (rand() % (max_start - min_start + 1));
+            }
+            break;
+        }
+        default:
+            e->perturbation_type = PERTURB_NONE;
+            break;
+        }
+    }
+
+    free(shuffled);
+}
+
+// Move an NPC adversarial agent with modified trajectory behavior.
+// The agent stays in expert_static_agent_indices (no reward/gradient), but its
+// physical position is modified to create adversarial challenges for policy agents.
+void move_npc_adversarial(Drive *env, int agent_idx) {
+    Entity *agent = &env->entities[agent_idx];
+    int t = env->timestep;
+
+    switch (agent->perturbation_type) {
+    case PERTURB_AGGRESSIVE:
+    case PERTURB_SLOW: {
+        // Time-warp: traverse trajectory at modified speed
+        float progress = (float)(t - env->init_steps) * agent->perturbation_speed_mult;
+        int base_t = env->init_steps + (int)progress;
+        float frac = progress - (int)progress;
+
+        if (base_t >= agent->array_size - 1) {
+            // Past end of trajectory — freeze at last valid position
+            int last_t = agent->array_size - 1;
+            while (last_t > 0 && (!agent->traj_valid || !agent->traj_valid[last_t])) last_t--;
+            if (last_t <= 0 || (agent->traj_valid && !agent->traj_valid[last_t])) {
+                agent->x = INVALID_POSITION;
+                agent->y = INVALID_POSITION;
+            } else {
+                agent->x = agent->traj_x[last_t];
+                agent->y = agent->traj_y[last_t];
+                agent->z = agent->traj_z[last_t];
+                agent->heading = agent->traj_heading[last_t];
+                agent->heading_x = cosf(agent->heading);
+                agent->heading_y = sinf(agent->heading);
+            }
+            agent->vx = 0.0f;
+            agent->vy = 0.0f;
+        } else if (agent->traj_valid && !agent->traj_valid[base_t]) {
+            agent->x = INVALID_POSITION;
+            agent->y = INVALID_POSITION;
+            agent->vx = 0.0f;
+            agent->vy = 0.0f;
+        } else {
+            int next_t = base_t + 1;
+            if (next_t < agent->array_size && agent->traj_valid && agent->traj_valid[next_t]) {
+                // Linearly interpolate position between base_t and next_t
+                agent->x = agent->traj_x[base_t] + frac * (agent->traj_x[next_t] - agent->traj_x[base_t]);
+                agent->y = agent->traj_y[base_t] + frac * (agent->traj_y[next_t] - agent->traj_y[base_t]);
+                agent->z = agent->traj_z[base_t] + frac * (agent->traj_z[next_t] - agent->traj_z[base_t]);
+                // Interpolate heading with proper angle wrapping
+                float h0 = agent->traj_heading[base_t];
+                float h1 = agent->traj_heading[next_t];
+                float dh = h1 - h0;
+                if (dh > M_PI) dh -= 2.0f * M_PI;
+                if (dh < -M_PI) dh += 2.0f * M_PI;
+                agent->heading = normalize_heading(h0 + frac * dh);
+            } else {
+                agent->x = agent->traj_x[base_t];
+                agent->y = agent->traj_y[base_t];
+                agent->z = agent->traj_z[base_t];
+                agent->heading = agent->traj_heading[base_t];
+            }
+            agent->heading_x = cosf(agent->heading);
+            agent->heading_y = sinf(agent->heading);
+            // Velocity = trajectory velocity scaled by time-warp factor
+            if (agent->traj_vx && agent->traj_vy) {
+                agent->vx = agent->traj_vx[base_t] * agent->perturbation_speed_mult;
+                agent->vy = agent->traj_vy[base_t] * agent->perturbation_speed_mult;
+            } else {
+                agent->vx = 0.0f;
+                agent->vy = 0.0f;
+            }
+        }
+        break;
+    }
+    case PERTURB_LANE_DRIFT: {
+        // Normal trajectory replay with lateral offset perpendicular to heading
+        if (t < 0 || t >= agent->array_size || (agent->traj_valid && !agent->traj_valid[t])) {
+            agent->x = INVALID_POSITION;
+            agent->y = INVALID_POSITION;
+            agent->vx = 0.0f;
+            agent->vy = 0.0f;
+            return;
+        }
+        float heading = agent->traj_heading[t];
+        // perturbation_heading_off is reused as lateral offset in meters for NPCs
+        float lateral = agent->perturbation_heading_off;
+        // Offset perpendicular to heading: (+sin, -cos) is the right-hand normal
+        agent->x = agent->traj_x[t] + lateral * sinf(heading);
+        agent->y = agent->traj_y[t] - lateral * cosf(heading);
+        agent->z = agent->traj_z[t];
+        agent->heading = heading;
+        agent->heading_x = cosf(heading);
+        agent->heading_y = sinf(heading);
+        if (agent->traj_vx && agent->traj_vy) {
+            agent->vx = agent->traj_vx[t];
+            agent->vy = agent->traj_vy[t];
+        }
+        break;
+    }
+    case PERTURB_SUDDEN_BRAKE: {
+        // Normal trajectory replay until brake_start, then freeze in place
+        if (t < agent->perturbation_brake_start) {
+            // Normal movement with velocity
+            if (t < 0 || t >= agent->array_size || (agent->traj_valid && !agent->traj_valid[t])) {
+                agent->x = INVALID_POSITION;
+                agent->y = INVALID_POSITION;
+                agent->vx = 0.0f;
+                agent->vy = 0.0f;
+                return;
+            }
+            agent->x = agent->traj_x[t];
+            agent->y = agent->traj_y[t];
+            agent->z = agent->traj_z[t];
+            agent->heading = agent->traj_heading[t];
+            agent->heading_x = cosf(agent->heading);
+            agent->heading_y = sinf(agent->heading);
+            if (agent->traj_vx && agent->traj_vy) {
+                agent->vx = agent->traj_vx[t];
+                agent->vy = agent->traj_vy[t];
+            }
+        } else {
+            // Frozen at brake position — stationary obstacle
+            int freeze_t = agent->perturbation_brake_start;
+            if (freeze_t >= agent->array_size) freeze_t = agent->array_size - 1;
+            if (agent->traj_valid && !agent->traj_valid[freeze_t]) {
+                agent->x = INVALID_POSITION;
+                agent->y = INVALID_POSITION;
+            } else {
+                agent->x = agent->traj_x[freeze_t];
+                agent->y = agent->traj_y[freeze_t];
+                agent->z = agent->traj_z[freeze_t];
+                agent->heading = agent->traj_heading[freeze_t];
+                agent->heading_x = cosf(agent->heading);
+                agent->heading_y = sinf(agent->heading);
+            }
+            agent->vx = 0.0f;
+            agent->vy = 0.0f;
+        }
+        break;
+    }
+    default:
+        // No perturbation — normal expert replay (move_expert already handles velocity)
+        move_expert(env, env->actions, agent_idx);
+        break;
+    }
 }
 
 int is_waypoint_within_reach(Entity *agent, int traj_idx, float threshold) {
@@ -838,8 +1081,14 @@ void set_start_position(Drive *env) {
             continue;
         }
         if (is_active == 0) {
-            e->vx = 0;
-            e->vy = 0;
+            // Expert agents have trajectory velocity data — set it so observations report correct speed
+            if (e->mark_as_expert && e->traj_vx && e->traj_vy && step < e->array_size) {
+                e->vx = e->traj_vx[step];
+                e->vy = e->traj_vy[step];
+            } else {
+                e->vx = 0;
+                e->vy = 0;
+            }
             e->vz = 0;
             e->collided_before_goal = 0;
         } else {
@@ -1191,6 +1440,11 @@ void move_expert(Drive *env, float *actions, int agent_idx) {
     agent->heading = agent->traj_heading[t];
     agent->heading_x = cosf(agent->heading);
     agent->heading_y = sinf(agent->heading);
+    // Set velocity from trajectory data so observations report correct speed
+    if (agent->traj_vx && agent->traj_vy) {
+        agent->vx = agent->traj_vx[t];
+        agent->vy = agent->traj_vy[t];
+    }
 }
 
 bool check_line_intersection(float p1[2], float p2[2], float q1[2], float q2[2]) {
@@ -2389,6 +2643,9 @@ void c_reset(Drive *env) {
     // Assign perturbations for adversarial training (re-rolled each reset)
     assign_perturbations(env);
 
+    // Assign NPC adversarial behaviors to expert_static agents (re-rolled each reset)
+    assign_npc_adversaries(env);
+
     compute_observations(env);
 }
 
@@ -2422,12 +2679,17 @@ void c_step(Drive *env) {
     memset(env->truncations, 0, env->active_agent_count * sizeof(unsigned char));
     env->timestep++;
 
-    // Move static experts
+    // Move static experts (and NPC adversaries)
     for (int i = 0; i < env->expert_static_agent_count; i++) {
         int expert_idx = env->expert_static_agent_indices[i];
         if (env->entities[expert_idx].x == INVALID_POSITION)
             continue;
-        move_expert(env, env->actions, expert_idx);
+        // Use adversarial movement if this expert has a perturbation type assigned
+        if (env->use_npc_adversarial && env->entities[expert_idx].perturbation_type != PERTURB_NONE) {
+            move_npc_adversarial(env, expert_idx);
+        } else {
+            move_expert(env, env->actions, expert_idx);
+        }
     }
     // Process actions for all active agents
     for (int i = 0; i < env->active_agent_count; i++) {

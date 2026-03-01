@@ -63,6 +63,9 @@ class Drive(pufferlib.PufferEnv):
         perturb_slow_speed=0.5,
         perturb_heading_offset=0.1,
         perturb_brake_duration=10,
+        use_npc_adversarial=0,
+        npc_adversarial_fraction=0.0,
+        npc_lateral_offset=1.5,
     ):
         # env
         self.dt = dt
@@ -97,6 +100,9 @@ class Drive(pufferlib.PufferEnv):
         self.perturb_slow_speed = perturb_slow_speed
         self.perturb_heading_offset = perturb_heading_offset
         self.perturb_brake_duration = perturb_brake_duration
+        self.use_npc_adversarial = use_npc_adversarial
+        self.npc_adversarial_fraction = npc_adversarial_fraction
+        self.npc_lateral_offset = npc_lateral_offset
 
         # Observation space calculation
         ego_features_base = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
@@ -246,6 +252,9 @@ class Drive(pufferlib.PufferEnv):
                 perturb_slow_speed=perturb_slow_speed,
                 perturb_heading_offset=perturb_heading_offset,
                 perturb_brake_duration=perturb_brake_duration,
+                use_npc_adversarial=use_npc_adversarial,
+                npc_adversarial_fraction=npc_adversarial_fraction,
+                npc_lateral_offset=npc_lateral_offset,
             )
             env_ids.append(env_id)
 
@@ -349,6 +358,9 @@ class Drive(pufferlib.PufferEnv):
                 perturb_slow_speed=self.perturb_slow_speed,
                 perturb_heading_offset=self.perturb_heading_offset,
                 perturb_brake_duration=self.perturb_brake_duration,
+                use_npc_adversarial=self.use_npc_adversarial,
+                npc_adversarial_fraction=self.npc_adversarial_fraction,
+                npc_lateral_offset=self.npc_lateral_offset,
             )
             env_ids.append(env_id)
         self.c_envs = binding.vectorize(*env_ids)

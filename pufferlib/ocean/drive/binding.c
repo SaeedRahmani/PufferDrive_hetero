@@ -222,6 +222,9 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     OVERRIDE_FLOAT(perturb_slow_speed);
     OVERRIDE_FLOAT(perturb_heading_offset);
     OVERRIDE_INT(perturb_brake_duration);
+    OVERRIDE_INT(use_npc_adversarial);
+    OVERRIDE_FLOAT(npc_adversarial_fraction);
+    OVERRIDE_FLOAT(npc_lateral_offset);
     OVERRIDE_INT(collision_behavior);
     OVERRIDE_INT(offroad_behavior);
     OVERRIDE_FLOAT(dt);
@@ -254,6 +257,9 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->perturb_slow_speed = conf.perturb_slow_speed;
     env->perturb_heading_offset = conf.perturb_heading_offset;
     env->perturb_brake_duration = conf.perturb_brake_duration;
+    env->use_npc_adversarial = conf.use_npc_adversarial;
+    env->npc_adversarial_fraction = conf.npc_adversarial_fraction;
+    env->npc_lateral_offset = conf.npc_lateral_offset;
     env->episode_length = conf.episode_length;
     env->termination_mode = conf.termination_mode;
     env->collision_behavior = conf.collision_behavior;
@@ -298,6 +304,7 @@ static int my_log(PyObject *dict, Log *log) {
     assign_to_dict(dict, "perturbed_agent_count", log->perturbed_agent_count);
     assign_to_dict(dict, "perturbed_collision_count", log->perturbed_collision_count);
     assign_to_dict(dict, "unperturbed_collision_count", log->unperturbed_collision_count);
+    assign_to_dict(dict, "npc_adversarial_count", log->npc_adversarial_count);
     // assign_to_dict(dict, "avg_displacement_error", log->avg_displacement_error);
     return 0;
 }

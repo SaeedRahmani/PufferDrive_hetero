@@ -27,6 +27,10 @@ typedef struct {
     float perturb_slow_speed;        // Speed multiplier for slow agents
     float perturb_heading_offset;    // Heading offset for lane drifters (radians)
     int perturb_brake_duration;      // Duration of sudden brake (steps)
+    // NPC adversarial training config
+    int use_npc_adversarial;          // Boolean: whether to inject NPC adversaries among expert_static agents
+    float npc_adversarial_fraction;   // Fraction of expert_static agents to make adversarial (0.0 to 1.0)
+    float npc_lateral_offset;         // Lateral offset in meters for NPC lane drift behavior
     float goal_radius;
     float goal_speed;
     int collision_behavior;
@@ -104,6 +108,12 @@ static int handler(void *config, const char *section, const char *name, const ch
         env_config->perturb_heading_offset = atof(value);
     } else if (MATCH("env", "perturb_brake_duration")) {
         env_config->perturb_brake_duration = atoi(value);
+    } else if (MATCH("env", "use_npc_adversarial")) {
+        env_config->use_npc_adversarial = atoi(value);
+    } else if (MATCH("env", "npc_adversarial_fraction")) {
+        env_config->npc_adversarial_fraction = atof(value);
+    } else if (MATCH("env", "npc_lateral_offset")) {
+        env_config->npc_lateral_offset = atof(value);
     } else if (MATCH("env", "goal_radius")) {
         env_config->goal_radius = atof(value);
     } else if (MATCH("env", "goal_speed")) {
