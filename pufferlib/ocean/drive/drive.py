@@ -23,6 +23,7 @@ class Drive(pufferlib.PufferEnv):
         human_agent_idx=0,
         reward_vehicle_collision=-0.1,
         reward_offroad_collision=-0.1,
+        social_reward_weight=0.5,
         reward_goal=1.0,
         reward_goal_post_respawn=0.5,
         use_guided_autonomy=0,
@@ -71,6 +72,7 @@ class Drive(pufferlib.PufferEnv):
         self.report_interval = report_interval
         self.reward_vehicle_collision = reward_vehicle_collision
         self.reward_offroad_collision = reward_offroad_collision
+        self.social_reward_weight = social_reward_weight
         self.reward_goal = reward_goal
         self.reward_goal_post_respawn = reward_goal_post_respawn
         self.goal_radius = goal_radius
@@ -216,6 +218,7 @@ class Drive(pufferlib.PufferEnv):
                 human_agent_idx=human_agent_idx,
                 reward_vehicle_collision=reward_vehicle_collision,
                 reward_offroad_collision=reward_offroad_collision,
+                social_reward_weight=social_reward_weight,
                 reward_goal=reward_goal,
                 reward_goal_post_respawn=reward_goal_post_respawn,
                 use_guided_autonomy=use_guided_autonomy,
@@ -320,6 +323,7 @@ class Drive(pufferlib.PufferEnv):
                 human_agent_idx=self.human_agent_idx,
                 reward_vehicle_collision=self.reward_vehicle_collision,
                 reward_offroad_collision=self.reward_offroad_collision,
+                social_reward_weight=self.social_reward_weight,
                 reward_goal=self.reward_goal,
                 reward_goal_post_respawn=self.reward_goal_post_respawn,
                 use_guided_autonomy=self.use_guided_autonomy,
