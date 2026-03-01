@@ -359,6 +359,7 @@ struct Drive {
     int termination_mode;
     float reward_vehicle_collision;
     float reward_offroad_collision;
+    float social_reward_weight;
     int use_guided_autonomy;        // Boolean: whether to calculate and add guided autonomy reward
     float guidance_speed_weight;    // Weight for speed deviation penalty
     float guidance_heading_weight;  // Weight for heading deviation penalty
@@ -2514,6 +2515,40 @@ void c_step(Drive *env) {
             float ga_reward = compute_guided_autonomy_reward(env, agent_idx, i);
             env->rewards[i] += ga_reward;
             env->logs[i].episode_return += ga_reward;
+        }
+    }
+
+    // Apply Social Value Orientation (SVO) Neighborhood Rewards
+    if (env->social_reward_weight > 0.0f && env->active_agent_count > 1) {
+        float self_rewards[1024]; // Max buffer for active agents (Drive limit usually MAX_AGENTS) // Note: using 1024 to be safe and avoid VLA depending on compiler
+        for (int i = 0; i < env->active_agent_count; i++) {
+            self_rewards[i] = env->rewards[i];
+        }
+
+        for (int i = 0; i < env->active_agent_count; i++) {
+            int agent_i = env->active_agent_indices[i];
+            float shared_sum = 0.0f;
+            int neighbors_count = 0;
+            
+            for (int j = 0; j < env->active_agent_count; j++) {
+                if (i == j) continue;
+                int agent_j = env->active_agent_indices[j];
+                
+                float dx = env->entities[agent_i].x - env->entities[agent_j].x;
+                float dy = env->entities[agent_i].y - env->entities[agent_j].y;
+                float dist_sq = dx*dx + dy*dy;
+                
+                if (dist_sq < 225.0f) { // 15^2 = 225
+                    shared_sum += self_rewards[j];
+                    neighbors_count++;
+                }
+            }
+            
+            if (neighbors_count > 0) {
+                float social_reward = env->social_reward_weight * (shared_sum / neighbors_count);
+                env->rewards[i] += social_reward;
+                env->logs[i].episode_return += social_reward;
+            }
         }
     }
 
