@@ -23,7 +23,7 @@ class Drive(pufferlib.PufferEnv):
         human_agent_idx=0,
         reward_vehicle_collision=-0.1,
         reward_offroad_collision=-0.1,
-        social_reward_weight=0.5,
+        social_reward_weight=0.0,
         reward_goal=1.0,
         reward_goal_post_respawn=0.5,
         use_guided_autonomy=0,
