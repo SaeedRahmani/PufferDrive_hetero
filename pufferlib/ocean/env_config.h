@@ -20,6 +20,8 @@ typedef struct {
     float guidance_heading_weight;  // Weight for heading deviation penalty
     float waypoint_reach_threshold; // Distance threshold for hitting waypoints
     int use_guidance_observations;  // Boolean: whether to include egocentric guidance waypoints in observations
+    float guidance_dropout_prob;     // Probability of dropping guidance waypoints (0.0 = keep all, 1.0 = drop all)
+    int guidance_dropout_mode;       // 0 = "max" (per-agent random rate up to prob, keep endpoints), 1 = "avg" (fixed rate, keep last), 2 = "remove_all"
     float goal_radius;
     float goal_speed;
     int collision_behavior;
@@ -85,6 +87,19 @@ static int handler(void *config, const char *section, const char *name, const ch
         env_config->waypoint_reach_threshold = atof(value);
     } else if (MATCH("env", "use_guidance_observations")) {
         env_config->use_guidance_observations = atoi(value);
+    } else if (MATCH("env", "guidance_dropout_prob")) {
+        env_config->guidance_dropout_prob = atof(value);
+    } else if (MATCH("env", "guidance_dropout_mode")) {
+        if (strcmp(value, "\"max\"") == 0 || strcmp(value, "max") == 0) {
+            env_config->guidance_dropout_mode = 0;
+        } else if (strcmp(value, "\"avg\"") == 0 || strcmp(value, "avg") == 0) {
+            env_config->guidance_dropout_mode = 1;
+        } else if (strcmp(value, "\"remove_all\"") == 0 || strcmp(value, "remove_all") == 0) {
+            env_config->guidance_dropout_mode = 2;
+        } else {
+            printf("Warning: Unknown guidance_dropout_mode '%s', defaulting to max\n", value);
+            env_config->guidance_dropout_mode = 0;
+        }
     } else if (MATCH("env", "goal_radius")) {
         env_config->goal_radius = atof(value);
     } else if (MATCH("env", "goal_speed")) {

@@ -239,6 +239,9 @@ struct Entity {
     int waypoints_hit_count;   // Total waypoints reached so far
     int total_valid_waypoints; // Total valid waypoints in trajectory
     float route_progress;      // Percentage of route completed (0.0 to 1.0)
+
+    // Guidance dropout (per-agent, per-episode)
+    int *guidance_dropout_mask; // Boolean array [array_size]: 1 = keep waypoint, 0 = drop
 };
 
 void free_entity(Entity *entity) {
@@ -252,6 +255,7 @@ void free_entity(Entity *entity) {
     free(entity->traj_heading);
     free(entity->traj_valid);
     free(entity->waypoints_hit);
+    free(entity->guidance_dropout_mask);
     free(entity->expert_accel);
     free(entity->expert_steering);
 }
@@ -346,6 +350,8 @@ struct Drive {
     float guidance_heading_weight;  // Weight for heading deviation penalty
     float waypoint_reach_threshold; // Distance threshold for hitting waypoints (e.g., 2.0m)
     int use_guidance_observations;  // Boolean: whether to include egocentric guidance waypoints in observations
+    float guidance_dropout_prob;     // Probability of dropping guidance waypoints (0.0 = no dropout)
+    int guidance_dropout_mode;       // 0=max, 1=avg, 2=remove_all
     char *map_name;
     float world_mean_x;
     float world_mean_y;
@@ -561,6 +567,87 @@ float compute_guided_autonomy_reward(Drive *env, int agent_idx, int active_idx) 
     return total_reward;
 }
 
+// ============================================================================
+// Guidance Dropout
+// ============================================================================
+// Creates a per-agent dropout mask that determines which guidance waypoints
+// are visible during this episode. Mirrors gpudrive_hetero's implementation:
+//   mode 0 ("max"):  per-agent rate ~ Uniform(0, dropout_prob), keep first & last valid
+//   mode 1 ("avg"):  fixed rate = dropout_prob for all agents, keep last valid only
+//   mode 2 ("remove_all"): drop everything — agent gets zero guidance
+
+void create_guidance_dropout_mask(Drive *env, Entity *agent) {
+    int traj_len = agent->array_size;
+
+    // Allocate mask if not yet allocated
+    if (agent->guidance_dropout_mask == NULL) {
+        agent->guidance_dropout_mask = (int *)calloc(traj_len, sizeof(int));
+    }
+
+    float dropout_prob = env->guidance_dropout_prob;
+    int dropout_mode = env->guidance_dropout_mode;
+
+    // Mode 2: remove all guidance
+    if (dropout_mode == 2) {
+        memset(agent->guidance_dropout_mask, 0, traj_len * sizeof(int));
+        return;
+    }
+
+    // Start with all waypoints kept (1 = keep)
+    for (int i = 0; i < traj_len; i++) {
+        agent->guidance_dropout_mask[i] = 1;
+    }
+
+    if (dropout_prob <= 0.0f) {
+        return; // No dropout — keep everything
+    }
+
+    // Find valid waypoint indices
+    int first_valid = -1;
+    int last_valid = -1;
+    int valid_count = 0;
+    for (int i = 0; i < traj_len; i++) {
+        if (agent->traj_valid[i]) {
+            if (first_valid < 0) first_valid = i;
+            last_valid = i;
+            valid_count++;
+        }
+    }
+
+    if (valid_count <= 2) {
+        return; // Too few points to dropout — keep all
+    }
+
+    // Determine per-agent dropout rate
+    float agent_dropout_rate;
+    if (dropout_mode == 0) {
+        // "max" mode: sample rate uniformly in [0, dropout_prob]
+        agent_dropout_rate = ((float)rand() / (float)RAND_MAX) * dropout_prob;
+    } else {
+        // "avg" mode: fixed rate
+        agent_dropout_rate = dropout_prob;
+    }
+
+    // Apply dropout to middle waypoints
+    for (int i = 0; i < traj_len; i++) {
+        if (!agent->traj_valid[i]) continue;
+
+        if (dropout_mode == 0) {
+            // "max": keep first and last valid, randomly drop middle
+            if (i == first_valid || i == last_valid) continue;
+        } else {
+            // "avg": keep only last valid, randomly drop the rest
+            if (i == last_valid) continue;
+        }
+
+        // Randomly drop this waypoint
+        float r = (float)rand() / (float)RAND_MAX;
+        if (r < agent_dropout_rate) {
+            agent->guidance_dropout_mask[i] = 0;
+        }
+    }
+}
+
 Entity *load_map_binary(const char *filename, Drive *env) {
     FILE *file = fopen(filename, "rb");
     if (!file)
@@ -614,6 +701,9 @@ Entity *load_map_binary(const char *filename, Drive *env) {
             entities[i].waypoints_hit_count = 0;
             entities[i].total_valid_waypoints = 0;
             entities[i].route_progress = 0.0f;
+            // Allocate guidance dropout mask (initialized to all-keep)
+            entities[i].guidance_dropout_mask = (int *)calloc(size, sizeof(int));
+            for (int k = 0; k < size; k++) entities[i].guidance_dropout_mask[k] = 1;
         } else {
             // Roads don't use these arrays
             entities[i].traj_vx = NULL;
@@ -626,6 +716,7 @@ Entity *load_map_binary(const char *filename, Drive *env) {
             entities[i].waypoints_hit = NULL;
             entities[i].waypoints_hit_count = 0;
             entities[i].total_valid_waypoints = 0;
+            entities[i].guidance_dropout_mask = NULL;
             entities[i].route_progress = 0.0f;
         }
         // Read array data
@@ -724,6 +815,11 @@ void set_start_position(Drive *env) {
         }
         e->waypoints_hit_count = 0;
         e->route_progress = 0.0f;
+
+        // Recreate guidance dropout mask for this episode
+        if (is_active && env->guidance_dropout_prob > 0.0f) {
+            create_guidance_dropout_mask(env, e);
+        }
     }
     // EndDrawing();
 }
@@ -2012,17 +2108,26 @@ void compute_observations(Drive *env) {
 
                 // Check if trajectory index is valid and within bounds
                 if (traj_idx < ego_entity->array_size && ego_entity->traj_valid[traj_idx]) {
-                    float wp_world_x = ego_entity->traj_x[traj_idx];
-                    float wp_world_y = ego_entity->traj_y[traj_idx];
-
-                    // Skip invalid positions
-                    if (wp_world_x != INVALID_POSITION && wp_world_y != INVALID_POSITION) {
-                        // Transform to egocentric coordinates
-                        float dx = wp_world_x - ego_entity->x;
-                        float dy = wp_world_y - ego_entity->y;
-                        wp_ego_x = dx * cos_heading + dy * sin_heading;
-                        wp_ego_y = -dx * sin_heading + dy * cos_heading;
+                    // Apply guidance dropout: skip dropped waypoints
+                    int keep = 1;
+                    if (env->guidance_dropout_prob > 0.0f && ego_entity->guidance_dropout_mask != NULL) {
+                        keep = ego_entity->guidance_dropout_mask[traj_idx];
                     }
+
+                    if (keep) {
+                        float wp_world_x = ego_entity->traj_x[traj_idx];
+                        float wp_world_y = ego_entity->traj_y[traj_idx];
+
+                        // Skip invalid positions
+                        if (wp_world_x != INVALID_POSITION && wp_world_y != INVALID_POSITION) {
+                            // Transform to egocentric coordinates
+                            float dx = wp_world_x - ego_entity->x;
+                            float dy = wp_world_y - ego_entity->y;
+                            wp_ego_x = dx * cos_heading + dy * sin_heading;
+                            wp_ego_y = -dx * sin_heading + dy * cos_heading;
+                        }
+                    }
+                    // If !keep, wp_ego_x/y remain 0.0 (dropped waypoint)
                 }
 
                 // Store normalized egocentric waypoint (same scale as goal: 0.005)
@@ -2259,6 +2364,11 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].jerk_long = 0.0f;
     env->entities[agent_idx].jerk_lat = 0.0f;
     env->entities[agent_idx].steering_angle = 0.0f;
+
+    // Recreate guidance dropout mask on respawn
+    if (env->guidance_dropout_prob > 0.0f) {
+        create_guidance_dropout_mask(env, &env->entities[agent_idx]);
+    }
 }
 
 void c_step(Drive *env) {

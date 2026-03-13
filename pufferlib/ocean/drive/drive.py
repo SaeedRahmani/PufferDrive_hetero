@@ -30,6 +30,8 @@ class Drive(pufferlib.PufferEnv):
         guidance_heading_weight=0.0,
         waypoint_reach_threshold=2.0,
         use_guidance_observations=0,
+        guidance_dropout_prob=0.0,
+        guidance_dropout_mode="max",
         goal_behavior=0,
         goal_target_distance=10.0,
         goal_radius=2.0,
@@ -78,6 +80,11 @@ class Drive(pufferlib.PufferEnv):
         self.guidance_heading_weight = guidance_heading_weight
         self.waypoint_reach_threshold = waypoint_reach_threshold
         self.use_guidance_observations = use_guidance_observations
+        self.guidance_dropout_prob = guidance_dropout_prob
+        self.guidance_dropout_mode_str = guidance_dropout_mode
+        # Convert mode string to int for C
+        _mode_map = {"max": 0, "avg": 1, "remove_all": 2}
+        self.guidance_dropout_mode = _mode_map.get(guidance_dropout_mode, 0)
         self.human_agent_idx = human_agent_idx
         self.episode_length = episode_length
         self.termination_mode = termination_mode
@@ -211,6 +218,8 @@ class Drive(pufferlib.PufferEnv):
                 guidance_heading_weight=guidance_heading_weight,
                 waypoint_reach_threshold=waypoint_reach_threshold,
                 use_guidance_observations=use_guidance_observations,
+                guidance_dropout_prob=self.guidance_dropout_prob,
+                guidance_dropout_mode=self.guidance_dropout_mode,
                 goal_radius=goal_radius,
                 goal_speed=goal_speed,
                 goal_behavior=self.goal_behavior,
@@ -308,6 +317,8 @@ class Drive(pufferlib.PufferEnv):
                 guidance_speed_weight=self.guidance_speed_weight,
                 guidance_heading_weight=self.guidance_heading_weight,
                 waypoint_reach_threshold=self.waypoint_reach_threshold,
+                guidance_dropout_prob=self.guidance_dropout_prob,
+                guidance_dropout_mode=self.guidance_dropout_mode,
                 goal_radius=self.goal_radius,
                 goal_behavior=self.goal_behavior,
                 goal_target_distance=self.goal_target_distance,
