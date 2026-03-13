@@ -587,9 +587,16 @@ void create_guidance_dropout_mask(Drive *env, Entity *agent) {
     float dropout_prob = env->guidance_dropout_prob;
     int dropout_mode = env->guidance_dropout_mode;
 
-    // Mode 2: remove all guidance
+    // Mode 2: remove all guidance (except goal)
     if (dropout_mode == 2) {
         memset(agent->guidance_dropout_mask, 0, traj_len * sizeof(int));
+        // Always keep the last valid waypoint (goal)
+        for (int i = traj_len - 1; i >= 0; i--) {
+            if (agent->traj_valid[i]) {
+                agent->guidance_dropout_mask[i] = 1;
+                break;
+            }
+        }
         return;
     }
 
