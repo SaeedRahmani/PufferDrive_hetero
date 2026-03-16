@@ -467,8 +467,11 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
         .init_mode = conf.init_mode,
         .control_mode = conf.control_mode,
         .use_guidance_observations = conf.use_guidance_observations,
+        .style_rand_prob = conf.style_rand_prob,
         .map_name = (char *)map_name,
     };
+    // Construct style_score_file path from map_dir
+    snprintf(env.style_score_file, sizeof(env.style_score_file), "%s/../style_scores.bin", conf.map_dir);
 
     allocate(&env);
 

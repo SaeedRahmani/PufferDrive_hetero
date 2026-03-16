@@ -228,6 +228,7 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     OVERRIDE_FLOAT(goal_target_distance);
     OVERRIDE_FLOAT(goal_radius);
     OVERRIDE_FLOAT(goal_speed);
+    OVERRIDE_FLOAT(style_rand_prob);
 
 #undef OVERRIDE_INT
 #undef OVERRIDE_FLOAT
@@ -257,6 +258,7 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->goal_target_distance = conf.goal_target_distance;
     env->goal_radius = conf.goal_radius;
     env->goal_speed = conf.goal_speed;
+    env->style_rand_prob = conf.style_rand_prob;
     env->max_controlled_agents = unpack(kwargs, "max_controlled_agents");
     char *map_dir = unpack_str(kwargs, "map_dir");
     int map_id = unpack(kwargs, "map_id");
@@ -264,6 +266,8 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     int init_steps = unpack(kwargs, "init_steps");
     char map_file[512];
     snprintf(map_file, sizeof(map_file), "%s/map_%03d.bin", map_dir, map_id);
+    // Construct style_score_file path: map_dir/../../style_scores.bin
+    snprintf(env->style_score_file, sizeof(env->style_score_file), "%s/../../style_scores.bin", map_dir);
     env->num_agents = max_agents;
     env->map_name = strdup(map_file);
     env->init_steps = init_steps;

@@ -82,8 +82,8 @@
 #define PARTNER_FEATURES 7
 
 // Ego features depend on dynamics model
-#define EGO_FEATURES_CLASSIC 8
-#define EGO_FEATURES_JERK 11
+#define EGO_FEATURES_CLASSIC 9
+#define EGO_FEATURES_JERK 12
 
 // Guidance waypoint observations
 #define GUIDANCE_WAYPOINT_FEATURES 2                                            // x, y per waypoint
@@ -242,6 +242,9 @@ struct Entity {
 
     // Guidance dropout (per-agent, per-episode)
     int *guidance_dropout_mask; // Boolean array [array_size]: 1 = keep waypoint, 0 = drop
+
+    // Style conditioning
+    float style_score; // Precomputed aggressiveness z in [-1, 1], 0 = neutral
 };
 
 void free_entity(Entity *entity) {
@@ -373,6 +376,8 @@ struct Drive {
     int *tracks_to_predict_indices;
     int init_mode;
     int control_mode;
+    char style_score_file[512]; // Path to style_scores.bin
+    float style_rand_prob;      // RTC random replacement probability (0.0 = off)
 };
 
 void add_log(Drive *env) {
@@ -760,6 +765,59 @@ Entity *load_map_binary(const char *filename, Drive *env) {
     return entities;
 }
 
+void load_style_scores(Drive *env) {
+    // Initialize all entities to neutral style score
+    for (int i = 0; i < env->num_entities; i++) {
+        env->entities[i].style_score = 0.0f;
+    }
+
+    if (env->style_score_file[0] == '\0')
+        return;
+
+    FILE *f = fopen(env->style_score_file, "rb");
+    if (!f)
+        return; // No style scores file — all agents get neutral z=0
+
+    int num_maps;
+    if (fread(&num_maps, sizeof(int), 1, f) != 1) {
+        fclose(f);
+        return;
+    }
+
+    for (int m = 0; m < num_maps; m++) {
+        char scen_id[16];
+        if (fread(scen_id, 16, 1, f) != 1)
+            break;
+        int num_agents;
+        if (fread(&num_agents, sizeof(int), 1, f) != 1)
+            break;
+
+        if (memcmp(scen_id, env->scenario_id, 16) == 0) {
+            // Found matching scenario — assign style scores by agent_id
+            for (int a = 0; a < num_agents; a++) {
+                int agent_id;
+                float score;
+                if (fread(&agent_id, sizeof(int), 1, f) != 1)
+                    break;
+                if (fread(&score, sizeof(float), 1, f) != 1)
+                    break;
+                for (int i = 0; i < env->num_objects; i++) {
+                    if (env->entities[i].id == agent_id) {
+                        env->entities[i].style_score = score;
+                        break;
+                    }
+                }
+            }
+            fclose(f);
+            return;
+        } else {
+            // Skip this map's agent data
+            fseek(f, (long)num_agents * (sizeof(int) + sizeof(float)), SEEK_CUR);
+        }
+    }
+    fclose(f);
+}
+
 void set_start_position(Drive *env) {
     for (int i = 0; i < env->num_entities; i++) {
         int is_active = 0;
@@ -826,6 +884,14 @@ void set_start_position(Drive *env) {
         // Recreate guidance dropout mask for this episode
         if (is_active && env->guidance_dropout_prob > 0.0f) {
             create_guidance_dropout_mask(env, e);
+        }
+
+        // RTC random replacement for style scores
+        if (is_active && env->style_rand_prob > 0.0f) {
+            float r = (float)rand() / (float)RAND_MAX;
+            if (r < env->style_rand_prob) {
+                e->style_score = 2.0f * ((float)rand() / (float)RAND_MAX) - 1.0f;
+            }
         }
     }
     // EndDrawing();
@@ -1725,6 +1791,7 @@ void init(Drive *env) {
     env->timestep = 0;
     init_action_space();
     env->entities = load_map_binary(env->map_name, env);
+    load_style_scores(env);
     set_means(env);
     init_grid_map(env);
     env->grid_map->vision_range = 21; // TODO: Why is this hardcoded?
@@ -2100,9 +2167,11 @@ void compute_observations(Drive *env) {
             obs[8] = ego_entity->a_lat / JERK_LAT[2];
             obs[9] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
             obs[10] = ego_entity->type / 3.0f;
+            obs[11] = ego_entity->style_score;
         } else {
             obs[6] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
             obs[7] = ego_entity->type / 3.0f;
+            obs[8] = ego_entity->style_score;
         }
 
         // Egocentric guidance waypoint observations

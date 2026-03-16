@@ -32,6 +32,7 @@ class Drive(pufferlib.PufferEnv):
         use_guidance_observations=0,
         guidance_dropout_prob=0.0,
         guidance_dropout_mode="max",
+        style_rand_prob=0.0,
         goal_behavior=0,
         goal_target_distance=10.0,
         goal_radius=2.0,
@@ -85,6 +86,7 @@ class Drive(pufferlib.PufferEnv):
         # Convert mode string to int for C
         _mode_map = {"max": 0, "avg": 1, "remove_all": 2}
         self.guidance_dropout_mode = _mode_map.get(guidance_dropout_mode, 0)
+        self.style_rand_prob = style_rand_prob
         self.human_agent_idx = human_agent_idx
         self.episode_length = episode_length
         self.termination_mode = termination_mode
@@ -220,6 +222,7 @@ class Drive(pufferlib.PufferEnv):
                 use_guidance_observations=use_guidance_observations,
                 guidance_dropout_prob=self.guidance_dropout_prob,
                 guidance_dropout_mode=self.guidance_dropout_mode,
+                style_rand_prob=self.style_rand_prob,
                 goal_radius=goal_radius,
                 goal_speed=goal_speed,
                 goal_behavior=self.goal_behavior,
@@ -319,6 +322,7 @@ class Drive(pufferlib.PufferEnv):
                 waypoint_reach_threshold=self.waypoint_reach_threshold,
                 guidance_dropout_prob=self.guidance_dropout_prob,
                 guidance_dropout_mode=self.guidance_dropout_mode,
+                style_rand_prob=self.style_rand_prob,
                 goal_radius=self.goal_radius,
                 goal_behavior=self.goal_behavior,
                 goal_target_distance=self.goal_target_distance,
