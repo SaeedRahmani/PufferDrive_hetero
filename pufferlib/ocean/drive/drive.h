@@ -244,7 +244,8 @@ struct Entity {
     int *guidance_dropout_mask; // Boolean array [array_size]: 1 = keep waypoint, 0 = drop
 
     // Style conditioning
-    float style_score; // Precomputed aggressiveness z in [-1, 1], 0 = neutral
+    float base_style_score;    // The true precomputed score loaded from the map file
+    float current_style_score; // The actual score used this episode (handles RTC random replacement)
 };
 
 void free_entity(Entity *entity) {
@@ -768,7 +769,7 @@ Entity *load_map_binary(const char *filename, Drive *env) {
 void load_style_scores(Drive *env) {
     // Initialize all entities to neutral style score
     for (int i = 0; i < env->num_entities; i++) {
-        env->entities[i].style_score = 0.0f;
+        env->entities[i].base_style_score = 0.0f;
     }
 
     if (env->style_score_file[0] == '\0')
@@ -803,7 +804,7 @@ void load_style_scores(Drive *env) {
                     break;
                 for (int i = 0; i < env->num_objects; i++) {
                     if (env->entities[i].id == agent_id) {
-                        env->entities[i].style_score = score;
+                        env->entities[i].base_style_score = score;
                         break;
                     }
                 }
@@ -887,10 +888,13 @@ void set_start_position(Drive *env) {
         }
 
         // RTC random replacement for style scores
-        if (is_active && env->style_rand_prob > 0.0f) {
-            float r = (float)rand() / (float)RAND_MAX;
-            if (r < env->style_rand_prob) {
-                e->style_score = 2.0f * ((float)rand() / (float)RAND_MAX) - 1.0f;
+        if (is_active) {
+            e->current_style_score = e->base_style_score; // Reset to ground truth first
+            if (env->style_rand_prob > 0.0f) {
+                float r = (float)rand() / (float)RAND_MAX;
+                if (r < env->style_rand_prob) {
+                    e->current_style_score = 2.0f * ((float)rand() / (float)RAND_MAX) - 1.0f;
+                }
             }
         }
     }
@@ -2167,11 +2171,11 @@ void compute_observations(Drive *env) {
             obs[8] = ego_entity->a_lat / JERK_LAT[2];
             obs[9] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
             obs[10] = ego_entity->type / 3.0f;
-            obs[11] = ego_entity->style_score;
+            obs[11] = ego_entity->current_style_score;
         } else {
             obs[6] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
             obs[7] = ego_entity->type / 3.0f;
-            obs[8] = ego_entity->style_score;
+            obs[8] = ego_entity->current_style_score;
         }
 
         // Egocentric guidance waypoint observations

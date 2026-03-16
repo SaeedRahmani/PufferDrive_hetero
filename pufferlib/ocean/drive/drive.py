@@ -32,7 +32,7 @@ class Drive(pufferlib.PufferEnv):
         use_guidance_observations=0,
         guidance_dropout_prob=0.0,
         guidance_dropout_mode="max",
-        style_rand_prob=0.0,
+        style_rand_prob=0.3,
         goal_behavior=0,
         goal_target_distance=10.0,
         goal_radius=2.0,

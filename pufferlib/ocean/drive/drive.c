@@ -78,7 +78,7 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
         .map_name = (char *)map_name,
     };
     // Construct style_score_file path from map_dir
-    snprintf(env.style_score_file, sizeof(env.style_score_file), "%s/../style_scores.bin", conf.map_dir);
+    snprintf(env.style_score_file, sizeof(env.style_score_file), "%s/../../style_scores.bin", conf.map_dir);
     allocate(&env);
     if (env.active_agent_count == 0) {
         fprintf(stderr, "Error: No active agents found in map '%s' with init_mode=%d. Cannot run demo.\n", env.map_name,
