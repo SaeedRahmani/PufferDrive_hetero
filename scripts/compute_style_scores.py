@@ -257,8 +257,8 @@ def main():
 
     # Default paths
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    data_dir = args.data_dir or os.path.join(project_root, "resources", "drive", "binaries")
-    out_path = args.out or os.path.join(project_root, "resources", "drive", "style_scores.bin")
+    data_dir = args.data_dir or os.path.join(project_root, "pufferlib", "resources", "drive", "binaries")
+    out_path = args.out or os.path.join(project_root, "pufferlib", "resources", "drive", "style_scores.bin")
 
     # Collect binary files
     bin_files = []
