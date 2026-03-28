@@ -258,11 +258,15 @@ class PuffeRL:
                 self.lstm_h[k] = torch.zeros(self.lstm_h[k].shape, device=device)
                 self.lstm_c[k] = torch.zeros(self.lstm_c[k].shape, device=device)
 
-        # Sample style z from prior for RL rollouts
+        # Use EXACT EXPERT Z computed for the current scenario
         style_z_dim = getattr(self.vecenv.driver_env, 'style_z_dim', 0)
         if style_z_dim > 0:
             z_dropout_prob = getattr(self.vecenv.driver_env, 'style_z_dropout_prob', 0.5)
-            z_array = np.random.randn(self.vecenv.driver_env.num_agents, style_z_dim).astype(np.float32)
+            if hasattr(self.vecenv.driver_env, 'agent_eval_z') and self.vecenv.driver_env.agent_eval_z is not None:
+                z_array = self.vecenv.driver_env.agent_eval_z.copy()
+            else:
+                z_array = np.zeros((self.vecenv.driver_env.num_agents, style_z_dim), dtype=np.float32)
+                
             # Apply style z dropout: zero out z for a fraction of agents
             dropout_mask = np.random.rand(self.vecenv.driver_env.num_agents) < z_dropout_prob
             z_array[dropout_mask] = 0.0
