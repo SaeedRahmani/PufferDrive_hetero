@@ -59,6 +59,8 @@ class Drive(pufferlib.PufferEnv):
         map_dir="resources/drive/binaries/training",
         ini_file_path="pufferlib/config/ocean/drive.ini",
         save_data_to_disk=True,
+        style_z_dim=0,
+        style_z_dropout_prob=0.5,
     ):
         # env
         self.dt = dt
@@ -93,12 +95,17 @@ class Drive(pufferlib.PufferEnv):
         self.ini_file_path = ini_file_path
         self.save_data_to_disk = save_data_to_disk
 
+        # Style latent dimension (0 = disabled, for backward compat)
+        self.style_z_dim = int(style_z_dim)
+        self.style_z_dropout_prob = float(style_z_dropout_prob)
+
         # Observation space calculation
         ego_features_base = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
             dynamics_model
         )
         guidance_obs_size = binding.GUIDANCE_OBS_SIZE if use_guidance_observations else 0
-        self.ego_features = ego_features_base + guidance_obs_size
+        self.ego_features_base = ego_features_base + guidance_obs_size
+        self.ego_features = self.ego_features_base + self.style_z_dim
 
         # Extract observation shapes from constants
         # These need to be defined in C, since they determine the shape of the arrays
@@ -109,6 +116,12 @@ class Drive(pufferlib.PufferEnv):
 
         self.num_obs = (
             self.ego_features
+            + self.max_partner_objects * self.partner_features
+            + self.max_road_objects * self.road_features
+        )
+        # C-level observation size (without style z, what C code fills)
+        self._c_num_obs = (
+            self.ego_features_base
             + self.max_partner_objects * self.partner_features
             + self.max_road_objects * self.road_features
         )
@@ -195,12 +208,19 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         super().__init__(buf=buf)
+        
+        # Allocate C-compatible observation buffer if style z is used
+        if self.style_z_dim > 0:
+            self.c_observations = np.zeros((self.num_agents, self._c_num_obs), dtype=np.float32)
+        else:
+            self.c_observations = self.observations
+
         env_ids = []
         for i in range(num_envs):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self.observations[cur:nxt],
+                self.c_observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -248,6 +268,13 @@ class Drive(pufferlib.PufferEnv):
         self.save_data_to_disk = save_data_to_disk
 
         self.expert_data_metrics = {}
+        self._expert_cache = None  # In-memory cache for expert data
+
+        # Style z state: per-agent z vectors for injection into observations
+        if self.style_z_dim > 0:
+            self._style_z = np.zeros((self.num_agents, self.style_z_dim), dtype=np.float32)
+        else:
+            self._style_z = None
 
         os.makedirs(self.human_data_dir, exist_ok=True)
 
@@ -266,11 +293,56 @@ class Drive(pufferlib.PufferEnv):
                 self._cache_size = len(discrete_actions)
             else:
                 self._cache_size = 0
+        else:
+            # prep_human_data=False: load cache size from existing data on disk
+            discrete_path = os.path.join(self.human_data_dir, f"expert_actions_discrete_h{bptt_horizon}.pt")
+            if os.path.exists(discrete_path):
+                discrete_actions = torch.load(discrete_path, map_location="cpu", weights_only=False)
+                self._cache_size = len(discrete_actions)
+            else:
+                self._cache_size = 0
+
+    def set_style_z(self, z_array):
+        """Set the style z vector for all agents.
+
+        Args:
+            z_array: numpy array of shape (num_agents, z_dim) or (num_agents,)
+        """
+        if self.style_z_dim == 0:
+            return
+        z = np.asarray(z_array, dtype=np.float32)
+        if z.ndim == 1 and self.style_z_dim == 1:
+            z = z.reshape(-1, 1)
+        assert z.shape == (self.num_agents, self.style_z_dim), (
+            f"Expected shape ({self.num_agents}, {self.style_z_dim}), got {z.shape}"
+        )
+        self._style_z[:] = z
+
+    def _sync_observations_from_c(self):
+        """Copies the C observation buffer into the padded Python observation buffer"""
+        if self.style_z_dim > 0:
+            # Copy base ego features
+            self.observations[:, :self.ego_features_base] = self.c_observations[:, :self.ego_features_base]
+            # Copy partner and road features (which follow the ego base in the C array)
+            partner_road_size = self._c_num_obs - self.ego_features_base
+            if partner_road_size > 0:
+                self.observations[:, self.ego_features : self.ego_features + partner_road_size] = \
+                    self.c_observations[:, self.ego_features_base : self.ego_features_base + partner_road_size]
+
+    def _inject_style_z(self):
+        """Inject style z into the observation buffer (last z_dim slots of ego features)."""
+        if self.style_z_dim == 0 or self._style_z is None:
+            return
+        # The z occupies positions [ego_features_base : ego_features_base + z_dim] in the obs
+        obs_np = self.observations
+        obs_np[:, self.ego_features_base:self.ego_features_base + self.style_z_dim] = self._style_z
 
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
         self.tick = 0
         self.truncations[:] = 0
+        self._sync_observations_from_c()
+        self._inject_style_z()
         return self.observations, []
 
     def resample_maps(self):
@@ -301,7 +373,7 @@ class Drive(pufferlib.PufferEnv):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self.observations[cur:nxt],
+                self.c_observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -340,6 +412,7 @@ class Drive(pufferlib.PufferEnv):
             env_ids.append(env_id)
         self.c_envs = binding.vectorize(*env_ids)
         binding.vec_reset(self.c_envs, seed)
+        self._sync_observations_from_c()
         self.terminals[:] = 1
         self.truncations[:] = 1
 
@@ -348,6 +421,8 @@ class Drive(pufferlib.PufferEnv):
         self.truncations[:] = 0
         self.actions[:] = actions
         binding.vec_step(self.c_envs)
+        self._sync_observations_from_c()
+        self._inject_style_z()
         self.tick += 1
         info = []
         if self.tick % self.report_interval == 0:
@@ -480,6 +555,17 @@ class Drive(pufferlib.PufferEnv):
             self.c_envs, self.expert_actions_discrete, self.expert_actions_continuous, self.expert_observations_full
         )
 
+        # Reshuffle observations from C layout [ego_base|partner|road|zeros]
+        # to Python layout [ego_base|z_slots|partner|road] when style_z_dim > 0
+        if self.style_z_dim > 0:
+            partner_road_size = self._c_num_obs - self.ego_features_base
+            # Save partner+road from C positions before overwriting
+            partner_road = self.expert_observations_full[:, :, self.ego_features_base:self.ego_features_base + partner_road_size].copy()
+            # Zero out z slots
+            self.expert_observations_full[:, :, self.ego_features_base:self.ego_features] = 0.0
+            # Place partner+road after z slots
+            self.expert_observations_full[:, :, self.ego_features:self.ego_features + partner_road_size] = partner_road
+
         # Extract all valid sequences of length bptt_horizon from all trajectories
         discrete_sequences_list = []
         continuous_sequences_list = []
@@ -566,10 +652,46 @@ class Drive(pufferlib.PufferEnv):
                 os.path.join(self.human_data_dir, f"expert_observations_h{bptt_horizon}.pt"),
             )
 
+            # Re-label with VAE so style z indices match the newly collected data
+            if self.style_z_dim > 0:
+                vae_path = os.path.join(self.human_data_dir, "vae_model.pt")
+                if os.path.exists(vae_path):
+                    from .trajectory_vae import label_expert_data
+                    print("Auto-labeling expert data with VAE style z...")
+                    label_expert_data(
+                        vae_model_path=vae_path,
+                        data_dir=self.human_data_dir,
+                        bptt_horizon=bptt_horizon,
+                        device="cuda" if torch.cuda.is_available() else "cpu",
+                    )
+                else:
+                    print(f"[WARNING] VAE model not found at {vae_path}, skipping style z labeling.")
+
         return data_metrics
 
+    def _load_expert_cache(self):
+        """Load expert data from disk into memory (once)."""
+        discrete_path = os.path.join(self.human_data_dir, f"expert_actions_discrete_h{self.bptt_horizon}.pt")
+        continuous_path = os.path.join(self.human_data_dir, f"expert_actions_continuous_h{self.bptt_horizon}.pt")
+        observations_path = os.path.join(self.human_data_dir, f"expert_observations_h{self.bptt_horizon}.pt")
+
+        cache = {
+            "observations": torch.load(observations_path, map_location="cpu", weights_only=False),
+            "discrete_actions": torch.load(discrete_path, map_location="cpu", weights_only=False),
+            "continuous_actions": torch.load(continuous_path, map_location="cpu", weights_only=False),
+            "style_z": None,
+        }
+
+        if self.style_z_dim > 0:
+            z_path = os.path.join(self.human_data_dir, f"expert_style_z_h{self.bptt_horizon}.pt")
+            if os.path.exists(z_path):
+                cache["style_z"] = torch.load(z_path, map_location="cpu", weights_only=False)
+
+        print(f"Cached expert data in memory: {cache['observations'].shape[0]} sequences")
+        self._expert_cache = cache
+
     def sample_expert_data(self, n_samples=512, return_both=False):
-        """Sample a random batch of human (expert) sequences from disk.
+        """Sample a random batch of human (expert) sequences from in-memory cache.
 
         Args:
             n_samples: Number of sequences to randomly sample
@@ -577,47 +699,45 @@ class Drive(pufferlib.PufferEnv):
                         If False, return only the action type matching the environment's action space.
 
         Returns:
+            If style_z_dim > 0 and z labels exist:
+                adds style_z tensor to the returned tuple
             If return_both=True:
-                (discrete_actions, continuous_actions, observations)
+                (discrete_actions, continuous_actions, observations[, style_z])
             If return_both=False:
-                (actions, observations) where actions match the env's action type
-
-        Note:
-            For classic discrete actions, the shape is (n_samples, bptt_horizon, 1) for joint actions.
-            For continuous actions, the shape is always (n_samples, bptt_horizon, 2).
-            Jerk dynamics model is not currently supported for expert data.
+                (actions, observations[, style_z]) where actions match the env's action type
         """
         if not self.save_data_to_disk:
             raise ValueError("Expert data was not saved to disk. Cannot sample expert data.")
 
-        discrete_path = os.path.join(self.human_data_dir, f"expert_actions_discrete_h{self.bptt_horizon}.pt")
-        continuous_path = os.path.join(self.human_data_dir, f"expert_actions_continuous_h{self.bptt_horizon}.pt")
-        observations_path = os.path.join(self.human_data_dir, f"expert_observations_h{self.bptt_horizon}.pt")
-
-        observations_full = torch.load(observations_path, map_location="cpu", weights_only=False)
-
-        # breakpoint()
+        if self._expert_cache is None:
+            self._load_expert_cache()
 
         # Sample indices
         samples = min(n_samples, self._cache_size)
         indices = torch.randint(0, self._cache_size, (samples,))
 
-        # print(f'Sampling {samples} expert sequences from {self._cache_size} available sequences.')
-        # print(indices)
+        sampled_obs = self._expert_cache["observations"][indices]
 
-        sampled_obs = observations_full[indices]
+        style_z = None
+        if self._expert_cache["style_z"] is not None:
+            style_z = self._expert_cache["style_z"][indices]
 
         if return_both:
-            discrete_actions = torch.load(discrete_path, map_location="cpu", weights_only=False)
-            continuous_actions = torch.load(continuous_path, map_location="cpu", weights_only=False)
-            return discrete_actions[indices], continuous_actions[indices], sampled_obs
+            result = (self._expert_cache["discrete_actions"][indices],
+                      self._expert_cache["continuous_actions"][indices],
+                      sampled_obs)
+            if style_z is not None:
+                result = result + (style_z,)
+            return result
         else:
-            # Return only the action type matching the environment
             if self._action_type_flag == 1:  # continuous
-                actions = torch.load(continuous_path, map_location="cpu", weights_only=False)
+                actions = self._expert_cache["continuous_actions"][indices]
             else:  # discrete
-                actions = torch.load(discrete_path, map_location="cpu", weights_only=False)
-            return actions[indices], sampled_obs
+                actions = self._expert_cache["discrete_actions"][indices]
+            result = (actions, sampled_obs)
+            if style_z is not None:
+                result = result + (style_z,)
+            return result
 
     def get_road_edge_polylines(self):
         """Get road edge polylines for all scenarios.

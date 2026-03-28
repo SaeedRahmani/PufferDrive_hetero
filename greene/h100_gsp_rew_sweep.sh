@@ -37,7 +37,7 @@ NUM_ENVS=48
 VEC_BATCH_SIZE=6
 NUM_AGENTS=1024
 BPTT_HORIZON=32
-HUMAN_REG_COEF=0.0
+HUMAN_REG_COEF=1.0
 USE_GUIDANCE_REWARDS=0
 
 # Calculate the segment size (minimum train batch size)
@@ -76,6 +76,7 @@ puffer sweep puffer_drive \
   --env.use-guided-autonomy $USE_GUIDANCE_REWARDS \
   --train.batch-size $TRAIN_BATCH_SIZE \
   --train.bptt-horizon $BPTT_HORIZON \
+  --train.human-ll-coef $HUMAN_REG_COEF
 
 # Print completion info
 echo "Sweep completed"

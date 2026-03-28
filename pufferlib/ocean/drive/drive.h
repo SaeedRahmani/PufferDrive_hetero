@@ -110,6 +110,7 @@
 #define GOAL_GENERATE_NEW 1
 #define GOAL_STOP 2
 #define GOAL_STOP_AND_TRUNCATE 3
+#define GOAL_REMOVE_AND_TRUNCATE 4
 
 // Jerk action space (for JERK dynamics model)
 static const float JERK_LONG[4] = {-15.0f, -4.0f, 0.0f, 4.0f};
@@ -1635,7 +1636,7 @@ void set_active_agents(Drive *env) {
             static_agent_indices[env->static_agent_count] = i;
             env->static_agent_count++;
             env->entities[i].active_agent = 0;
-            if (env->entities[i].mark_as_expert == 1 || env->active_agent_count == env->num_agents) {
+            if (env->entities[i].mark_as_expert == 1 || env->active_agent_count == env->num_agents || !is_controlled) {
                 expert_static_agent_indices[env->expert_static_agent_count] = i;
                 env->expert_static_agent_count++;
                 env->entities[i].mark_as_expert = 1;
@@ -2508,9 +2509,21 @@ void c_step(Drive *env) {
                 env->truncations[i] = 1; // Mark as truncated
             }
         }
+    } else if (env->goal_behavior == GOAL_REMOVE_AND_TRUNCATE) {
+        for (int i = 0; i < env->active_agent_count; i++) {
+            int agent_idx = env->active_agent_indices[i];
+            int reached_goal = env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX];
+            if (reached_goal) {
+                env->entities[agent_idx].stopped = 1;
+                env->entities[agent_idx].vx = env->entities[agent_idx].vy = 0.0f;
+                env->entities[agent_idx].x = INVALID_POSITION;
+                env->entities[agent_idx].y = INVALID_POSITION;
+                env->truncations[i] = 1;
+            }
+        }
     }
 
-    // Episode boundary after this step: treat time-limit and early-termination as truncation.
+// Episode boundary after this step: treat time-limit and early-termination as truncation.
     // `timestep` is incremented at step start, so truncate when `(timestep + 1) >= episode_length`.
     int originals_remaining = 0;
     for (int i = 0; i < env->active_agent_count; i++) {

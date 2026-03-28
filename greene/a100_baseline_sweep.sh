@@ -37,7 +37,8 @@ NUM_ENVS=32
 VEC_BATCH_SIZE=2
 NUM_AGENTS=1024
 BPTT_HORIZON=32
-HUMAN_REG_COEF=0.0
+HUMAN_REG_COEF=1.0
+USE_GUIDANCE_REWARDS=0
 
 # Calculate the segment size (minimum train batch size)
 SEGMENT_SIZE=$((NUM_AGENTS * NUM_WORKERS * BPTT_HORIZON))
@@ -72,6 +73,7 @@ puffer sweep puffer_drive \
   --vec.num-envs $NUM_ENVS \
   --vec.batch-size $VEC_BATCH_SIZE \
   --env.num-agents $NUM_AGENTS \
+  --env.use-guided-autonomy $USE_GUIDANCE_REWARDS \
   --train.batch-size $TRAIN_BATCH_SIZE \
   --train.bptt-horizon $BPTT_HORIZON \
   --train.human-ll-coef $HUMAN_REG_COEF
