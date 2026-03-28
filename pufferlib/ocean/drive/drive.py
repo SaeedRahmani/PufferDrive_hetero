@@ -95,12 +95,17 @@ class Drive(pufferlib.PufferEnv):
         self.ini_file_path = ini_file_path
         self.save_data_to_disk = save_data_to_disk
 
+        # Style latent dimension (0 = disabled)
+        self.style_z_dim = int(style_z_dim)
+        self.style_z_dropout_prob = float(style_z_dropout_prob)
+
         # Observation space calculation
         ego_features_base = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
             dynamics_model
         )
         guidance_obs_size = binding.GUIDANCE_OBS_SIZE if use_guidance_observations else 0
-        self.ego_features = ego_features_base + guidance_obs_size
+        self.ego_features_base = ego_features_base + guidance_obs_size
+        self.ego_features = self.ego_features_base + self.style_z_dim
 
         # Extract observation shapes from constants
         # These need to be defined in C, since they determine the shape of the arrays
@@ -111,6 +116,12 @@ class Drive(pufferlib.PufferEnv):
 
         self.num_obs = (
             self.ego_features
+            + self.max_partner_objects * self.partner_features
+            + self.max_road_objects * self.road_features
+        )
+        # C-level observation size (without style z)
+        self._c_num_obs = (
+            self.ego_features_base
             + self.max_partner_objects * self.partner_features
             + self.max_road_objects * self.road_features
         )
@@ -197,12 +208,19 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         super().__init__(buf=buf)
+
+        # Allocate C-compatible observation buffer if style z is used
+        if self.style_z_dim > 0:
+            self.c_observations = np.zeros((self.num_agents, self._c_num_obs), dtype=np.float32)
+        else:
+            self.c_observations = self.observations
+
         env_ids = []
         for i in range(num_envs):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self.observations[cur:nxt],
+                self.c_observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -251,6 +269,12 @@ class Drive(pufferlib.PufferEnv):
 
         self.expert_data_metrics = {}
 
+        # Style z state: per-agent z vectors for injection into observations
+        if self.style_z_dim > 0:
+            self._style_z = np.zeros((self.num_agents, self.style_z_dim), dtype=np.float32)
+        else:
+            self._style_z = None
+
         os.makedirs(self.human_data_dir, exist_ok=True)
 
         if self.prep_human_data and not Drive._human_data_prepped:
@@ -269,10 +293,39 @@ class Drive(pufferlib.PufferEnv):
             else:
                 self._cache_size = 0
 
+    def set_style_z(self, z_array):
+        """Set the style z vector for all agents."""
+        if self.style_z_dim == 0:
+            return
+        z = np.asarray(z_array, dtype=np.float32)
+        if z.ndim == 1 and self.style_z_dim == 1:
+            z = z.reshape(-1, 1)
+        assert z.shape == (self.num_agents, self.style_z_dim), (
+            f"Expected shape ({self.num_agents}, {self.style_z_dim}), got {z.shape}"
+        )
+        self._style_z[:] = z
+
+    def _sync_observations_from_c(self):
+        """Copy C observation buffer into the padded Python observation buffer."""
+        if self.style_z_dim > 0:
+            self.observations[:, :self.ego_features_base] = self.c_observations[:, :self.ego_features_base]
+            partner_road_size = self._c_num_obs - self.ego_features_base
+            if partner_road_size > 0:
+                self.observations[:, self.ego_features : self.ego_features + partner_road_size] = \
+                    self.c_observations[:, self.ego_features_base : self.ego_features_base + partner_road_size]
+
+    def _inject_style_z(self):
+        """Inject style z into the observation buffer."""
+        if self.style_z_dim == 0 or self._style_z is None:
+            return
+        self.observations[:, self.ego_features_base:self.ego_features_base + self.style_z_dim] = self._style_z
+
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
         self.tick = 0
         self.truncations[:] = 0
+        self._sync_observations_from_c()
+        self._inject_style_z()
         return self.observations, []
 
     def resample_maps(self):
@@ -303,7 +356,7 @@ class Drive(pufferlib.PufferEnv):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self.observations[cur:nxt],
+                self.c_observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -342,6 +395,8 @@ class Drive(pufferlib.PufferEnv):
             env_ids.append(env_id)
         self.c_envs = binding.vectorize(*env_ids)
         binding.vec_reset(self.c_envs, seed)
+        self._sync_observations_from_c()
+        self._inject_style_z()
         self.terminals[:] = 1
         self.truncations[:] = 1
 
@@ -350,6 +405,8 @@ class Drive(pufferlib.PufferEnv):
         self.truncations[:] = 0
         self.actions[:] = actions
         binding.vec_step(self.c_envs)
+        self._sync_observations_from_c()
+        self._inject_style_z()
         self.tick += 1
         info = []
         if self.tick % self.report_interval == 0:

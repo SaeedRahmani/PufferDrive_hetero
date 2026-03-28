@@ -2002,7 +2002,6 @@ void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_o
     }
 }
 
-
 int c_get_static_agent_count(Drive *env) {
     return env->static_agent_count;
 }
@@ -2022,7 +2021,6 @@ void c_get_static_agent_state(Drive *env, float *x_out, float *y_out, float *z_o
         width_out[i] = agent->width;
     }
 }
-
 void c_get_global_ground_truth_trajectories(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out,
                                             int *valid_out, int *id_out, bool *is_vehicle_out,
                                             bool *is_track_to_predict_out, char *scenario_id_out) {

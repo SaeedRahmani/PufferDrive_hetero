@@ -258,6 +258,16 @@ class PuffeRL:
                 self.lstm_h[k] = torch.zeros(self.lstm_h[k].shape, device=device)
                 self.lstm_c[k] = torch.zeros(self.lstm_c[k].shape, device=device)
 
+        # Sample style z from prior for RL rollouts
+        style_z_dim = getattr(self.vecenv.driver_env, 'style_z_dim', 0)
+        if style_z_dim > 0:
+            z_dropout_prob = getattr(self.vecenv.driver_env, 'style_z_dropout_prob', 0.5)
+            z_array = np.random.randn(self.vecenv.driver_env.num_agents, style_z_dim).astype(np.float32)
+            # Apply style z dropout: zero out z for a fraction of agents
+            dropout_mask = np.random.rand(self.vecenv.driver_env.num_agents) < z_dropout_prob
+            z_array[dropout_mask] = 0.0
+            self.vecenv.driver_env.set_style_z(z_array)
+
         self.full_rows = 0
         while self.full_rows < self.segments:
             profile("env", epoch)
@@ -435,15 +445,57 @@ class PuffeRL:
             if config["human_sequences"] > 0:
                 # 1: Sample a batch of human actions and observations from dataset
                 # Shape: [n_sequences, bptt_horizon, feature_dim]
-                discrete_human_actions, continuous_human_actions, human_observations = (
-                    self.vecenv.driver_env.sample_expert_data(n_samples=config["human_sequences"], return_both=True)
+                expert_data = self.vecenv.driver_env.sample_expert_data(
+                    n_samples=config["human_sequences"], return_both=True
                 )
+
+                # Unpack — may include style_z if style_z_dim > 0
+                if len(expert_data) == 4:
+                    discrete_human_actions, continuous_human_actions, human_observations, expert_style_z = expert_data
+                else:
+                    discrete_human_actions, continuous_human_actions, human_observations = expert_data
+                    expert_style_z = None
 
                 # Select appropriate action type for training
                 use_continuous = self.vecenv.driver_env._action_type_flag == 1
                 human_actions = continuous_human_actions if use_continuous else discrete_human_actions
                 human_actions = human_actions.to(device)
+                
+                # Check for explicit style z existence when required
+                style_z_dim = getattr(self.vecenv.driver_env, 'style_z_dim', 0)
+                if style_z_dim > 0 and expert_style_z is None:
+                    print("\n[WARNING] style_z_dim > 0 but no expert_style_z labels were returned from sample_expert_data!")
+                    print("          Did you forget to run the offline VAE training step?")
+                    print("          Expert behavioral cloning will NOT condition on style z for this epoch!\n")
+
+                # PufferDrive observation dimensions
+                ego_base = getattr(self.vecenv.driver_env, 'ego_features_base', 0)
+                c_num_obs = getattr(self.vecenv.driver_env, '_c_num_obs', human_observations.shape[-1])
+                num_obs = getattr(self.vecenv.driver_env, 'num_obs', human_observations.shape[-1])
+
+                # Inject expert style z into observations if available
                 human_observations = human_observations.to(device)
+                if style_z_dim > 0 and expert_style_z is not None:
+                    obs_width = human_observations.shape[-1]
+                    if obs_width == num_obs:
+                        # Expert data already has z slots (saved with num_obs width) — inject z directly
+                        z_expanded = expert_style_z.unsqueeze(1).expand(
+                            -1, human_observations.shape[1], -1
+                        ).to(device)
+                        human_observations[:, :, ego_base:ego_base + style_z_dim] = z_expanded
+                    elif obs_width == c_num_obs:
+                        # Expert data has no z slots — allocate padded tensor and insert z
+                        padded = torch.zeros(
+                            (human_observations.shape[0], human_observations.shape[1], num_obs),
+                            dtype=human_observations.dtype, device=device
+                        )
+                        padded[:, :, :ego_base] = human_observations[:, :, :ego_base]
+                        z_expanded = expert_style_z.unsqueeze(1).expand(
+                            -1, human_observations.shape[1], -1
+                        ).to(device)
+                        padded[:, :, ego_base:ego_base + style_z_dim] = z_expanded
+                        padded[:, :, ego_base + style_z_dim:] = human_observations[:, :, ego_base:]
+                        human_observations = padded
 
                 # 2: Compute the log-likelihood of human actions under the current policy,
                 # given the corresponding human observations. A higher likelihood indicates
@@ -1577,6 +1629,7 @@ def load_config(env_name, config_dir=None):
     parser.add_argument("--wandb", action="store_true", help="Use wandb for logging")
     parser.add_argument("--wandb-project", type=str, default="pufferlib")
     parser.add_argument("--wandb-group", type=str, default="debug")
+    parser.add_argument("--wandb-name", type=str, default=None, help="Name for the wandb run", dest="wandb_run_name")
     parser.add_argument("--neptune", action="store_true", help="Use neptune for logging")
     parser.add_argument("--neptune-name", type=str, default="pufferai")
     parser.add_argument("--neptune-project", type=str, default="ablations")
