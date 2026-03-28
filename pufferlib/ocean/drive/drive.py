@@ -59,6 +59,8 @@ class Drive(pufferlib.PufferEnv):
         map_dir="resources/drive/binaries/training",
         ini_file_path="pufferlib/config/ocean/drive.ini",
         save_data_to_disk=True,
+        style_z_dim=0,
+        style_z_dropout_prob=0.5,
     ):
         # env
         self.dt = dt
@@ -97,6 +99,7 @@ class Drive(pufferlib.PufferEnv):
         ego_features_base = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
             dynamics_model
         )
+        self.ego_features_base = ego_features_base
         guidance_obs_size = binding.GUIDANCE_OBS_SIZE if use_guidance_observations else 0
         self.ego_features = ego_features_base + guidance_obs_size
 
@@ -397,6 +400,43 @@ class Drive(pufferlib.PufferEnv):
             states["length"],
             states["width"],
         )
+
+        return states
+
+
+    def get_static_agent_state(self):
+        """Get current global state of all static (non-controlled) agents.
+
+        Returns:
+            dict with keys 'x', 'y', 'z', 'heading', 'id', 'length', 'width',
+            'counts' (list of per-env counts), and 'total' (int).
+        """
+        counts = binding.vec_get_static_agent_counts(self.c_envs)
+        total = sum(counts)
+
+        states = {
+            "x": np.zeros(total, dtype=np.float32),
+            "y": np.zeros(total, dtype=np.float32),
+            "z": np.zeros(total, dtype=np.float32),
+            "heading": np.zeros(total, dtype=np.float32),
+            "id": np.zeros(total, dtype=np.int32),
+            "length": np.zeros(total, dtype=np.float32),
+            "width": np.zeros(total, dtype=np.float32),
+            "counts": counts,
+            "total": total,
+        }
+
+        if total > 0:
+            binding.vec_get_static_agent_state(
+                self.c_envs,
+                states["x"],
+                states["y"],
+                states["z"],
+                states["heading"],
+                states["id"],
+                states["length"],
+                states["width"],
+            )
 
         return states
 
