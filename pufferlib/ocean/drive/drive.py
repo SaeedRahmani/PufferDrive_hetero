@@ -57,6 +57,8 @@ class Drive(pufferlib.PufferEnv):
         map_dir="resources/drive/binaries/training",
         ini_file_path="pufferlib/config/ocean/drive.ini",
         save_data_to_disk=True,
+        style_z_dim=0,
+        style_z_dropout_prob=0.5,
     ):
         # env
         self.dt = dt
