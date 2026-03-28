@@ -1,4 +1,6 @@
 import numpy as np
+import torch
+from pufferlib.ocean.drive.trajectory_vae import TrajectoryVAE, extract_kinematic_features
 import gymnasium
 import json
 import struct
@@ -173,6 +175,32 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(f"action_space must be 'discrete' or 'continuous'. Got: {action_type}")
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
+
+        self.vae_model = None
+        self.vae_stats = None
+        self.vae_bptt = None
+        self.agent_eval_z = None
+        
+        if self.style_z_dim > 0:
+            vae_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_model.pt")
+            stats_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_feature_stats.pt")
+            if os.path.exists(vae_path) and os.path.exists(stats_path):
+                try:
+                    checkpoint = torch.load(vae_path, map_location="cpu", weights_only=False)
+                    self.vae_model = TrajectoryVAE(
+                        input_dim=checkpoint["input_dim"],
+                        z_dim=checkpoint["z_dim"],
+                        hidden_size=checkpoint["hidden_size"],
+                        seq_len=checkpoint["seq_len"]
+                    )
+                    self.vae_model.load_state_dict(checkpoint["model_state_dict"])
+                    self.vae_model.eval()
+                    self.vae_stats = torch.load(stats_path, map_location="cpu", weights_only=False)
+                    self.vae_bptt = checkpoint["seq_len"]
+                    print("[INFO] Offline VAE loaded into environment for on-the-fly Z inference.")
+                except Exception as e:
+                    print(f"Failed to load VAE: {e}")
+
         self._dynamics_model_flag = 0 if dynamics_model == "classic" else 1
 
         # Check if resources directory exists
@@ -619,6 +647,40 @@ class Drive(pufferlib.PufferEnv):
         continuous_sequences = all_continuous[sampled_indices]
         obs_sequences = all_obs[sampled_indices]
 
+        # [NEW] Pre-compute continuous expert Zs for all sampled trajectories
+        z_sequences = np.array([])
+        if self.vae_model is not None and len(continuous_sequences) > 0:
+            with torch.no_grad():
+                # continuous_sequences shape: (N, h, 2)
+                cont_t = torch.from_numpy(continuous_sequences)
+                features = extract_kinematic_features(cont_t)
+                features_norm = (features - self.vae_stats["mean"]) / self.vae_stats["std"].clamp(min=1e-6)
+                
+                # Process in batches to avoid OOM
+                z_list = []
+                batch_size = 512
+                for i in range(0, len(features_norm), batch_size):
+                    batch = features_norm[i:i + batch_size]
+                    z = self.vae_model.encode(batch, deterministic=True)
+                    z_list.append(z.cpu().numpy())
+                z_sequences = np.concatenate(z_list, axis=0)
+
+        # [NEW] Compute proper Z for rollouts for all agents using the first chunk of their trajectory
+        if self.vae_model is not None:
+            with torch.no_grad():
+                try:
+                    first_chunk = self.expert_actions_continuous[:self.vae_bptt, :, :]
+                    first_chunk_tensor = torch.from_numpy(first_chunk.swapaxes(0, 1))
+                    features = extract_kinematic_features(first_chunk_tensor)
+                    features_norm = (features - self.vae_stats["mean"]) / self.vae_stats["std"].clamp(min=1e-6)
+                    self.agent_eval_z = self.vae_model.encode(features_norm, deterministic=True).numpy()
+                except Exception as e:
+                    print("Failed to compute agent_eval_z:", e)
+                    self.agent_eval_z = np.zeros((self.num_agents, self.style_z_dim), dtype=np.float32)
+        else:
+            self.agent_eval_z = np.zeros((self.num_agents, self.style_z_dim), dtype=np.float32)
+
+
         self._cache_size = num_sequences
         self._total_available_sequences = len(discrete_sequences_list)
         self._needs_resampling = needs_resampling
@@ -662,6 +724,13 @@ class Drive(pufferlib.PufferEnv):
                 os.path.join(self.human_data_dir, f"expert_observations_h{bptt_horizon}.pt"),
             )
 
+            if len(z_sequences) > 0:
+                torch.save(
+                    torch.from_numpy(z_sequences),
+                    os.path.join(self.human_data_dir, f"expert_style_z_h{bptt_horizon}.pt"),
+                )
+
+
         return data_metrics
 
     def sample_expert_data(self, n_samples=512, return_both=False):
@@ -703,16 +772,26 @@ class Drive(pufferlib.PufferEnv):
 
         sampled_obs = observations_full[indices]
 
+        # Load Zs
+        z_path = os.path.join(self.human_data_dir, f"expert_style_z_h{self.bptt_horizon}.pt")
+        sampled_z = None
+        if self.style_z_dim > 0 and os.path.exists(z_path):
+            z_full = torch.load(z_path, map_location="cpu", weights_only=False)
+            sampled_z = z_full[indices]
+
         if return_both:
             discrete_actions = torch.load(discrete_path, map_location="cpu", weights_only=False)
             continuous_actions = torch.load(continuous_path, map_location="cpu", weights_only=False)
+            if sampled_z is not None:
+                return discrete_actions[indices], continuous_actions[indices], sampled_obs, sampled_z
             return discrete_actions[indices], continuous_actions[indices], sampled_obs
         else:
-            # Return only the action type matching the environment
-            if self._action_type_flag == 1:  # continuous
+            if self._action_type_flag == 1:
                 actions = torch.load(continuous_path, map_location="cpu", weights_only=False)
-            else:  # discrete
+            else:
                 actions = torch.load(discrete_path, map_location="cpu", weights_only=False)
+            if sampled_z is not None:
+                return actions[indices], sampled_obs, sampled_z
             return actions[indices], sampled_obs
 
     def get_road_edge_polylines(self):
