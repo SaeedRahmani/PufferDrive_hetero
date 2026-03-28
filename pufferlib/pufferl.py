@@ -258,6 +258,17 @@ class PuffeRL:
                 self.lstm_h[k] = torch.zeros(self.lstm_h[k].shape, device=device)
                 self.lstm_c[k] = torch.zeros(self.lstm_c[k].shape, device=device)
 
+        # Initialize causal encoder hidden state identically (defaults to 64 but handles dynamic sizes from torch.py)
+        style_z_dim = getattr(self.vecenv.driver_env, 'style_z_dim', 0)
+        if style_z_dim > 0:
+            if not hasattr(self, 'style_encoder_hidden'):
+                self.style_encoder_hidden = {}
+            for k in range(self.vecenv.num_envs):
+                # Init with None, torch.py style_encoder.init_hidden will populate it on first pass
+                self.style_encoder_hidden[k] = None
+        else:
+             self.style_encoder_hidden = {}
+
         self.full_rows = 0
         while self.full_rows < self.segments:
             profile("env", epoch)
@@ -289,6 +300,9 @@ class PuffeRL:
                     state["lstm_h"] = self.lstm_h[env_id.start]
                     state["lstm_c"] = self.lstm_c[env_id.start]
 
+                if style_z_dim > 0:
+                     state["style_encoder_hidden"] = self.style_encoder_hidden.get(env_id.start, None)
+
                 logits, value = self.policy.forward_eval(o_device, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
                 r = torch.clamp(r, -1, 1)
@@ -298,6 +312,9 @@ class PuffeRL:
                 if config["use_rnn"]:
                     self.lstm_h[env_id.start] = state["lstm_h"]
                     self.lstm_c[env_id.start] = state["lstm_c"]
+
+                if style_z_dim > 0:
+                    self.style_encoder_hidden[env_id.start] = state.get("style_encoder_hidden", None)
 
                 # Fast path for fully vectorized envs
                 l = self.ep_lengths[env_id.start].item()
@@ -417,8 +434,17 @@ class PuffeRL:
                 lstm_c=None,
             )
 
+            # RL forward: stop-grad on z is active by default in the policy
             logits, newvalue = self.policy(mb_obs, state)
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
+
+            # Capture KL loss from RL forward pass BEFORE the human forward
+            # pass overwrites _last_mu/_last_logvar in the style encoder.
+            style_kl_coef = config.get('style_kl_coef', 0.0)
+            if style_kl_coef > 0 and hasattr(self.uncompiled_policy, 'get_style_kl_loss'):
+                style_kl_loss = self.uncompiled_policy.get_style_kl_loss().to(device)
+            else:
+                style_kl_loss = torch.tensor(0.0, device=device)
 
             profile("train_misc", epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
@@ -445,15 +471,23 @@ class PuffeRL:
                 human_actions = human_actions.to(device)
                 human_observations = human_observations.to(device)
 
-                # 2: Compute the log-likelihood of human actions under the current policy,
-                # given the corresponding human observations. A higher likelihood indicates
-                # that the policy behaves more like a human under the same observations.
+                # 2: Compute the log-likelihood of human actions under the current policy.
+                # For the causal encoder: disable stop-grad so encoder learns style from expert data.
                 human_state = dict(
                     lstm_h=None,
                     lstm_c=None,
+                    style_encoder_hidden=None,
                 )
 
+                # Allow gradients through style encoder for expert data
+                if hasattr(self.uncompiled_policy, 'set_stop_grad'):
+                    self.uncompiled_policy.set_stop_grad(False)
+
                 human_logits, _ = self.policy(human_observations, human_state)
+
+                # Re-enable stop-grad for subsequent RL passes
+                if hasattr(self.uncompiled_policy, 'set_stop_grad'):
+                    self.uncompiled_policy.set_stop_grad(True)
 
                 _, human_log_prob, human_entropy = pufferlib.pytorch.sample_logits(
                     logits=human_logits, action=human_actions
@@ -497,6 +531,7 @@ class PuffeRL:
                 + config["vf_coef"] * v_loss
                 - config["ent_coef"] * entropy_loss
                 - config["human_ll_coef"] * human_nll
+                + style_kl_coef * style_kl_loss
             )
             self.amp_context.__enter__()  # TODO: AMP needs some debugging
 
@@ -513,6 +548,8 @@ class PuffeRL:
             losses["clipfrac"] += clipfrac.item() / self.total_minibatches
             losses["importance"] += ratio.mean().item() / self.total_minibatches
             losses["human_nll"] += human_nll / self.total_minibatches
+            if style_kl_coef > 0:
+                losses["style_kl"] += style_kl_loss.item() / self.total_minibatches
             if config["human_sequences"] > 0:
                 self.realism["human_log_prob"] = human_log_prob.mean().item()
 
@@ -1577,6 +1614,7 @@ def load_config(env_name, config_dir=None):
     parser.add_argument("--wandb", action="store_true", help="Use wandb for logging")
     parser.add_argument("--wandb-project", type=str, default="pufferlib")
     parser.add_argument("--wandb-group", type=str, default="debug")
+    parser.add_argument("--wandb-name", type=str, default=None, help="Name for the wandb run", dest="wandb_run_name")
     parser.add_argument("--neptune", action="store_true", help="Use neptune for logging")
     parser.add_argument("--neptune-name", type=str, default="pufferai")
     parser.add_argument("--neptune-project", type=str, default="ablations")
