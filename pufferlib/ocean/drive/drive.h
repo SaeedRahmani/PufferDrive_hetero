@@ -110,6 +110,7 @@
 #define GOAL_GENERATE_NEW 1
 #define GOAL_STOP 2
 #define GOAL_STOP_AND_TRUNCATE 3
+#define GOAL_REMOVE_AND_TRUNCATE 4
 
 // Jerk action space (for JERK dynamics model)
 static const float JERK_LONG[4] = {-15.0f, -4.0f, 0.0f, 4.0f};
@@ -1705,7 +1706,7 @@ void set_active_agents(Drive *env) {
             static_agent_indices[env->static_agent_count] = i;
             env->static_agent_count++;
             env->entities[i].active_agent = 0;
-            if (env->entities[i].mark_as_expert == 1 || env->active_agent_count == env->num_agents) {
+            if (env->entities[i].mark_as_expert == 1 || env->active_agent_count == env->num_agents || !is_controlled) {
                 expert_static_agent_indices[env->expert_static_agent_count] = i;
                 env->expert_static_agent_count++;
                 env->entities[i].mark_as_expert = 1;
@@ -2072,6 +2073,25 @@ void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_o
     }
 }
 
+int c_get_static_agent_count(Drive *env) {
+    return env->static_agent_count;
+}
+
+void c_get_static_agent_state(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out, int *id_out,
+                              float *length_out, float *width_out) {
+    for (int i = 0; i < env->static_agent_count; i++) {
+        int agent_idx = env->static_agent_indices[i];
+        Entity *agent = &env->entities[agent_idx];
+
+        x_out[i] = agent->x + env->world_mean_x;
+        y_out[i] = agent->y + env->world_mean_y;
+        z_out[i] = agent->z;
+        heading_out[i] = agent->heading;
+        id_out[i] = agent->id;
+        length_out[i] = agent->length;
+        width_out[i] = agent->width;
+    }
+}
 void c_get_global_ground_truth_trajectories(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out,
                                             int *valid_out, int *id_out, bool *is_vehicle_out,
                                             bool *is_track_to_predict_out, char *scenario_id_out) {
@@ -2581,9 +2601,21 @@ void c_step(Drive *env) {
                 env->truncations[i] = 1; // Mark as truncated
             }
         }
+    } else if (env->goal_behavior == GOAL_REMOVE_AND_TRUNCATE) {
+        for (int i = 0; i < env->active_agent_count; i++) {
+            int agent_idx = env->active_agent_indices[i];
+            int reached_goal = env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX];
+            if (reached_goal) {
+                env->entities[agent_idx].stopped = 1;
+                env->entities[agent_idx].vx = env->entities[agent_idx].vy = 0.0f;
+                env->entities[agent_idx].x = INVALID_POSITION;
+                env->entities[agent_idx].y = INVALID_POSITION;
+                env->truncations[i] = 1;
+            }
+        }
     }
 
-    // Episode boundary after this step: treat time-limit and early-termination as truncation.
+// Episode boundary after this step: treat time-limit and early-termination as truncation.
     // `timestep` is incremented at step start, so truncate when `(timestep + 1) >= episode_length`.
     int originals_remaining = 0;
     for (int i = 0; i < env->active_agent_count; i++) {
