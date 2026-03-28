@@ -172,6 +172,10 @@ class LSTMWrapper(nn.Module):
         else:
             lstm_state = None
 
+        if state is not None:
+            state["seq_B"] = B
+            state["seq_TT"] = TT
+
         x = x.reshape(B * TT, *space_shape)
         hidden = self.policy.encode_observations(x, state)
         assert hidden.shape == (B * TT, self.input_size)
