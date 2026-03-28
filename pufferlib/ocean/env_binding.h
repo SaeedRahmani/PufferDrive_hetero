@@ -726,6 +726,65 @@ static PyObject *vec_get_global_agent_state(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *vec_get_static_agent_counts(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 1) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_static_agent_counts requires 1 argument");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) return NULL;
+
+    PyObject *counts = PyList_New(vec->num_envs);
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        PyList_SetItem(counts, i, PyLong_FromLong(c_get_static_agent_count(drive)));
+    }
+    return counts;
+}
+
+static PyObject *vec_get_static_agent_state(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 8) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_static_agent_state requires 8 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) return NULL;
+
+    PyObject *x_arr = PyTuple_GetItem(args, 1);
+    PyObject *y_arr = PyTuple_GetItem(args, 2);
+    PyObject *z_arr = PyTuple_GetItem(args, 3);
+    PyObject *heading_arr = PyTuple_GetItem(args, 4);
+    PyObject *id_arr = PyTuple_GetItem(args, 5);
+    PyObject *length_arr = PyTuple_GetItem(args, 6);
+    PyObject *width_arr = PyTuple_GetItem(args, 7);
+
+    if (!PyArray_Check(x_arr) || !PyArray_Check(y_arr) || !PyArray_Check(z_arr) || !PyArray_Check(heading_arr) ||
+        !PyArray_Check(id_arr) || !PyArray_Check(length_arr) || !PyArray_Check(width_arr)) {
+        PyErr_SetString(PyExc_TypeError, "All output arrays must be NumPy arrays");
+        return NULL;
+    }
+
+    float *x_base = (float *)PyArray_DATA((PyArrayObject *)x_arr);
+    float *y_base = (float *)PyArray_DATA((PyArrayObject *)y_arr);
+    float *z_base = (float *)PyArray_DATA((PyArrayObject *)z_arr);
+    float *heading_base = (float *)PyArray_DATA((PyArrayObject *)heading_arr);
+    int *id_base = (int *)PyArray_DATA((PyArrayObject *)id_arr);
+    float *length_base = (float *)PyArray_DATA((PyArrayObject *)length_arr);
+    float *width_base = (float *)PyArray_DATA((PyArrayObject *)width_arr);
+
+    int offset = 0;
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        c_get_static_agent_state(drive, &x_base[offset], &y_base[offset], &z_base[offset], &heading_base[offset],
+                                 &id_base[offset], &length_base[offset], &width_base[offset]);
+        offset += drive->static_agent_count;
+    }
+
+    Py_RETURN_NONE;
+}
+
 static PyObject *get_ground_truth_trajectories(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 9) {
         PyErr_SetString(PyExc_TypeError, "get_ground_truth_trajectories requires 9 arguments");
@@ -1087,6 +1146,8 @@ static PyMethodDef methods[] = {
     {"vec_collect_expert_data", vec_collect_expert_data, METH_VARARGS, "Collect expert actions and observations"},
     {"get_global_agent_state", get_global_agent_state, METH_VARARGS, "Get global agent state"},
     {"vec_get_global_agent_state", vec_get_global_agent_state, METH_VARARGS, "Get agent state from vectorized env"},
+    {"vec_get_static_agent_counts", vec_get_static_agent_counts, METH_VARARGS, "Get static agent counts per env"},
+    {"vec_get_static_agent_state", vec_get_static_agent_state, METH_VARARGS, "Get static agent state from vectorized env"},
     {"get_ground_truth_trajectories", get_ground_truth_trajectories, METH_VARARGS, "Get ground truth trajectories"},
     {"vec_get_global_ground_truth_trajectories", vec_get_global_ground_truth_trajectories, METH_VARARGS,
      "Get ground truth trajectories from vectorized env"},
