@@ -1,0 +1,56 @@
+Loaded VAE: z_dim=1, device=cuda
+
+============================================================
+Processing training: 9000 maps from /data/lynx/saeani/pufferdrive_vae_1d/resources/drive/binaries/training
+============================================================
+  [  500/9000] 3038 vehicles, 0 failed | 2.3 maps/s, ETA 3640s
+  [ 1000/9000] 6080 vehicles, 0 failed | 2.3 maps/s, ETA 3415s
+  [ 1500/9000] 9271 vehicles, 0 failed | 2.3 maps/s, ETA 3259s
+  [ 2000/9000] 12334 vehicles, 0 failed | 2.3 maps/s, ETA 3026s
+  [ 2500/9000] 15410 vehicles, 0 failed | 2.3 maps/s, ETA 2812s
+  [ 3000/9000] 18456 vehicles, 0 failed | 2.3 maps/s, ETA 2588s
+  [ 3500/9000] 21689 vehicles, 0 failed | 2.3 maps/s, ETA 2376s
+  [ 4000/9000] 24917 vehicles, 0 failed | 2.3 maps/s, ETA 2150s
+  [ 4500/9000] 28002 vehicles, 0 failed | 2.3 maps/s, ETA 1933s
+  [ 5000/9000] 31244 vehicles, 0 failed | 2.3 maps/s, ETA 1721s
+  [ 5500/9000] 34435 vehicles, 0 failed | 2.3 maps/s, ETA 1502s
+  [ 6000/9000] 37371 vehicles, 0 failed | 2.3 maps/s, ETA 1290s
+  [ 6500/9000] 40316 vehicles, 0 failed | 2.3 maps/s, ETA 1078s
+  [ 7000/9000] 43475 vehicles, 0 failed | 2.3 maps/s, ETA 861s
+  [ 7500/9000] 46500 vehicles, 0 failed | 2.3 maps/s, ETA 646s
+  [ 8000/9000] 49699 vehicles, 0 failed | 2.3 maps/s, ETA 429s
+  [ 8500/9000] 52827 vehicles, 0 failed | 2.3 maps/s, ETA 215s
+  [ 9000/9000] 55878 vehicles, 0 failed | 2.3 maps/s, ETA 0s
+
+training complete: 9000 maps, 55878 unique vehicles, 0 failed, 3870.9s
+
+============================================================
+Processing validation: 1000 maps from /data/lynx/saeani/pufferdrive_vae_1d/resources/drive/binaries/validation
+============================================================
+  [  500/1000] 3143 vehicles, 0 failed | 2.3 maps/s, ETA 215s
+  [ 1000/1000] 6253 vehicles, 0 failed | 2.3 maps/s, ETA 0s
+
+validation complete: 1000 maps, 6253 unique vehicles, 0 failed, 430.3s
+
+============================================================
+Building quantile normalization from 62131 raw z values
+============================================================
+Raw z: mean=0.7285, std=0.6273, range=[-0.3646, 2.0151]
+Normalized z: mean=0.0000, std=0.5774, range=[-1.0000, 1.0000]
+Distribution in 10 bins:
+  [-1.0, -0.8):  6213 #############################
+  [-0.8, -0.6):  6213 #############################
+  [-0.6, -0.4):  6213 #############################
+  [-0.4, -0.2):  6213 #############################
+  [-0.2, +0.0):  6213 #############################
+  [+0.0, +0.2):  6213 #############################
+  [+0.2, +0.4):  6213 #############################
+  [+0.4, +0.6):  6213 #############################
+  [+0.6, +0.8):  6213 #############################
+  [+0.8, +1.0):  6214 ##############################
+Saved training lookup: 9000 maps
+Saved validation lookup: 1000 maps
+Saved quantile reference: 62131 sorted z values
+Saved raw z debug file
+
+Done! All files saved to pufferlib/resources/drive/human_demonstrations
