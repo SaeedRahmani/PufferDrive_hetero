@@ -685,6 +685,7 @@ class Drive(pufferlib.PufferEnv):
                         data_dir=self.human_data_dir,
                         bptt_horizon=bptt_horizon,
                         device="cuda" if torch.cuda.is_available() else "cpu",
+                        ego_features=self.ego_features,
                     )
                 else:
                     print(f"[WARNING] VAE model not found at {vae_path}, skipping style z labeling.")
