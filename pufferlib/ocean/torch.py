@@ -16,7 +16,8 @@ Recurrent = pufferlib.models.LSTMWrapper
 
 class Drive(nn.Module):
     def __init__(self, env, input_size=128, hidden_size=128, style_z_dim=0,
-                 style_encoder_hidden_size=64, style_stop_grad_rl=True, **kwargs):
+                 style_encoder_hidden_size=64, style_stop_grad_rl=True,
+                 style_z_dropout_prob=0.5, **kwargs):
         super().__init__()
         self.hidden_size = hidden_size
         self.observation_size = env.single_observation_space.shape[0]
@@ -33,17 +34,21 @@ class Drive(nn.Module):
         self._last_mu = None
         self._last_logvar = None
         self._override_z = None  # For eval mode manual override
+        self.style_z_dropout_prob = float(style_z_dropout_prob)
 
         # Ego dimensions: base (what C fills) vs full (base + z)
         self.ego_dim_base = getattr(env, 'ego_features_base', env.ego_features)
         self.ego_dim = env.ego_features
 
-        # Create causal style encoder if enabled
+        # Create causal style encoder if enabled (with scene conditioning)
         if self.style_z_dim > 0:
+            # Scene dim = partner_features (7) + road_features (7) = 14
+            self.scene_dim = self.partner_features + self.road_features
             self.style_encoder = CausalStyleEncoder(
                 input_dim=self.ego_dim_base,
                 z_dim=self.style_z_dim,
                 hidden_size=style_encoder_hidden_size,
+                scene_dim=self.scene_dim,
             )
 
         # When style_z_dim > 0, ego obs is concatenated with z before encoding
@@ -88,6 +93,32 @@ class Drive(nn.Module):
     def forward_train(self, x, state=None):
         return self.forward(x, state)
 
+    def _compute_scene_summary(self, partner_obs, road_obs):
+        """Compute mean-pooled scene summary features for the style encoder.
+
+        Args:
+            partner_obs: (batch, partner_dim) raw partner observations
+            road_obs: (batch, road_dim) raw road observations
+
+        Returns:
+            scene_features: (batch, partner_features + road_features) = (batch, 14)
+        """
+        batch = partner_obs.shape[0]
+        # Reshape to (batch, max_partners, features)
+        partners = partner_obs.view(batch, self.max_partner_objects, self.partner_features)
+        roads = road_obs.view(batch, self.max_road_objects, self.road_features)
+
+        # Mean-pool over non-zero entries
+        partner_mask = (partners.abs().sum(dim=-1, keepdim=True) > 1e-6).float()
+        partner_count = partner_mask.sum(dim=1).clamp(min=1)
+        partner_summary = (partners * partner_mask).sum(dim=1) / partner_count
+
+        road_mask = (roads.abs().sum(dim=-1, keepdim=True) > 1e-6).float()
+        road_count = road_mask.sum(dim=1).clamp(min=1)
+        road_summary = (roads * road_mask).sum(dim=1) / road_count
+
+        return torch.cat([partner_summary, road_summary], dim=-1)
+
     def encode_observations(self, observations, state=None):
         ego_dim = self.ego_dim
         partner_dim = self.max_partner_objects * self.partner_features
@@ -98,9 +129,12 @@ class Drive(nn.Module):
         partner_obs = observations[:, ego_dim : ego_dim + partner_dim]
         road_obs = observations[:, ego_dim + partner_dim : ego_dim + partner_dim + road_dim]
 
-        # Style encoder: compute z from base ego obs (without z slots)
+        # Style encoder: compute z from base ego obs + scene features (without z slots)
         if self.style_z_dim > 0:
             ego_obs_base = ego_obs_full[:, :self.ego_dim_base]  # without z
+
+            # Compute scene summary features for encoder conditioning
+            scene_features = self._compute_scene_summary(partner_obs, road_obs)
 
             if self._override_z is not None:
                 # Manual override mode (eval with explicit z)
@@ -129,9 +163,10 @@ class Drive(nn.Module):
                     # BPTT Training Pass -> process sequentially
                     B, TT = state["seq_B"], state["seq_TT"]
                     ego_obs_seq = ego_obs_base.view(B, TT, -1)
+                    scene_seq = scene_features.view(B, TT, -1)
                     
                     z_seq, new_hidden, mu_seq, logvar_seq = self.style_encoder.forward_sequence(
-                        ego_obs_seq, hidden=encoder_hidden
+                        ego_obs_seq, hidden=encoder_hidden, scene_features_seq=scene_seq
                     )
                     
                     # Store variables flattened
@@ -140,7 +175,9 @@ class Drive(nn.Module):
                     self._last_logvar = logvar_seq.view(B * TT, -1)
                 else:
                     # Rollout / Eval Pass -> process single step
-                    z, new_hidden, mu, logvar = self.style_encoder(ego_obs_base, encoder_hidden)
+                    z, new_hidden, mu, logvar = self.style_encoder(
+                        ego_obs_base, encoder_hidden, scene_features
+                    )
                     self._last_mu = mu
                     self._last_logvar = logvar
 
@@ -151,6 +188,11 @@ class Drive(nn.Module):
             # Apply stop-gradient during RL if configured
             if self._stop_grad_active and self.style_stop_grad_rl:
                 z = z.detach()
+
+            # Apply z-dropout: randomly zero out z for robustness
+            if self.training and self.style_z_dropout_prob > 0:
+                drop_mask = (torch.rand(z.shape[0], 1, device=z.device) < self.style_z_dropout_prob)
+                z = z * (~drop_mask).float()
 
             # Build full ego obs with z
             ego_obs = torch.cat([ego_obs_base, z], dim=-1)  # (batch, ego_dim_base + z_dim)
