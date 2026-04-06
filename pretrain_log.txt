@@ -1,0 +1,57 @@
+Skipping Step 1 (expert data collection)
+============================================================
+STEP 2: Training scene-conditioned VAE (z_dim=4, beta=0.1, epochs=200)
+============================================================
+Loaded expert actions: torch.Size([3600, 32, 2])
+Extracted kinematic features: torch.Size([3600, 32, 4])
+Extracted scene features: torch.Size([3600, 32, 14])
+
+Training VAE: z_dim=4, beta=0.1, scene_dim=14, epochs=200, samples=3600
+Output: resources/drive/human_demonstrations/vae_model.pt
+
+Epoch    1/200 | Loss: 0.9872 | Recon: 0.9872 | KL: 0.0586 | Beta: 0.0000
+Epoch   20/200 | Loss: 0.6695 | Recon: 0.6477 | KL: 1.1474 | Beta: 0.0190
+Epoch   40/200 | Loss: 0.6320 | Recon: 0.5971 | KL: 0.8940 | Beta: 0.0390
+Epoch   60/200 | Loss: 0.6464 | Recon: 0.6011 | KL: 0.7681 | Beta: 0.0590
+Epoch   80/200 | Loss: 0.6668 | Recon: 0.6124 | KL: 0.6886 | Beta: 0.0790
+Epoch  100/200 | Loss: 0.6734 | Recon: 0.6094 | KL: 0.6463 | Beta: 0.0990
+Epoch  120/200 | Loss: 0.6823 | Recon: 0.6216 | KL: 0.6071 | Beta: 0.1000
+Epoch  140/200 | Loss: 0.6770 | Recon: 0.6138 | KL: 0.6313 | Beta: 0.1000
+Epoch  160/200 | Loss: 0.6714 | Recon: 0.6084 | KL: 0.6301 | Beta: 0.1000
+Epoch  180/200 | Loss: 0.6607 | Recon: 0.5979 | KL: 0.6282 | Beta: 0.1000
+Epoch  200/200 | Loss: 0.6575 | Recon: 0.5939 | KL: 0.6359 | Beta: 0.1000
+
+VAE training complete. Best loss: 0.6144
+Model saved to: resources/drive/human_demonstrations/vae_model.pt
+
+VAE model saved to: resources/drive/human_demonstrations/vae_model.pt
+Step 2 complete.
+
+============================================================
+STEP 3: Labeling expert data with VAE z vectors
+============================================================
+Labeled 3600 expert sequences with z_dim=4
+z stats: mean=[0.1372567117214203, -0.0879841074347496, -0.3986321687698364, -0.23751212656497955], std=[0.4424704313278198, 0.9627956748008728, 0.9124009609222412, 0.6141495704650879]
+Saved to: resources/drive/human_demonstrations/expert_style_z_h32.pt
+
+Labeled 3600 sequences with z_dim=4
+Step 3 complete.
+
+============================================================
+STEP 4: Analyzing VAE quality and style scores
+============================================================
+
+--- Style Z Statistics (z_dim=1) ---
+  N sequences:  3600
+  Mean:          -0.1467
+  Std:           0.7886
+  Min:           -2.8304
+  Max:           2.6661
+  Median:        -0.0689
+Traceback (most recent call last):
+  File "/data/lynx/saeani/pufferdrive_vae_scene_pretrained_nobc/pretrain_vae_pipeline.py", line 393, in <module>
+    step4_analyze(data_dir, z_vectors, bptt_horizon=args.bptt_horizon)
+  File "/data/lynx/saeani/pufferdrive_vae_scene_pretrained_nobc/pretrain_vae_pipeline.py", line 141, in step4_analyze
+    print(f"  Skewness:      {scipy_stats.skew(z_flat):.4f}")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: unsupported format string passed to numpy.ndarray.__format__

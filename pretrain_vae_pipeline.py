@@ -43,7 +43,7 @@ def step1_collect_expert_data(data_dir, num_maps=9000, num_agents=1024, bptt_hor
         save_data_to_disk=True,
         control_mode="control_vehicles",
         map_dir="resources/drive/binaries/training",
-        style_z_dim=1,  # 1D VAE
+        style_z_dim=4,  # 4D scene-conditioned VAE
         episode_length=91,
         init_steps=0,
     )
@@ -69,10 +69,10 @@ def step1_collect_expert_data(data_dir, num_maps=9000, num_agents=1024, bptt_hor
     return metrics
 
 
-def step2_train_vae(data_dir, z_dim=1, beta=0.01, epochs=200, bptt_horizon=32, device="cuda"):
-    """Train trajectory VAE on collected expert data."""
+def step2_train_vae(data_dir, z_dim=4, beta=0.1, epochs=200, bptt_horizon=32, device="cuda"):
+    """Train scene-conditioned trajectory VAE on collected expert data."""
     print("=" * 60)
-    print(f"STEP 2: Training VAE (z_dim={z_dim}, beta={beta}, epochs={epochs})")
+    print(f"STEP 2: Training scene-conditioned VAE (z_dim={z_dim}, beta={beta}, epochs={epochs})")
     print("=" * 60)
 
     from pufferlib.ocean.drive.trajectory_vae import train_vae
@@ -87,6 +87,8 @@ def step2_train_vae(data_dir, z_dim=1, beta=0.01, epochs=200, bptt_horizon=32, d
         batch_size=256,
         bptt_horizon=bptt_horizon,
         device=device,
+        ego_features=194,
+        scene_dim=14,
     )
 
     print(f"\nVAE model saved to: {model_path}")
@@ -107,6 +109,7 @@ def step3_label_data(vae_model_path, data_dir, bptt_horizon=32, device="cuda"):
         data_dir=data_dir,
         bptt_horizon=bptt_horizon,
         device=device,
+        ego_features=194,
     )
 
     print(f"\nLabeled {len(z_vectors)} sequences with z_dim={z_vectors.shape[1]}")
@@ -325,8 +328,8 @@ def step4_analyze(data_dir, z_vectors, bptt_horizon=32, output_dir=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pre-training pipeline for 1D VAE")
     parser.add_argument("--data-dir", default="resources/drive/human_demonstrations")
-    parser.add_argument("--z-dim", type=int, default=1)
-    parser.add_argument("--beta", type=float, default=0.01)
+    parser.add_argument("--z-dim", type=int, default=4)
+    parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--bptt-horizon", type=int, default=32)
     parser.add_argument("--num-maps", type=int, default=9000)
