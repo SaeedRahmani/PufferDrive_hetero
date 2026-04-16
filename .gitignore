@@ -196,3 +196,11 @@ docs/book/*
 
 # other
 figures/
+EVAL_FIXES_LOG.md
+paper_revised.md
+slurm_scripts/
+paper.md
+_backup_pre_fix/*
+evaluation_results/*
+slurm_logs/*
+paper_figures/*

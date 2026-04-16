@@ -991,9 +991,13 @@ class Utilization(Thread):
                     time.sleep(self.delay)
                     continue
 
-                self.gpu_util.append(torch.cuda.utilization())
-                free, total = torch.cuda.mem_get_info()
-                self.gpu_mem.append(100 * (total - free) / total)
+                try:
+                    self.gpu_util.append(torch.cuda.utilization())
+                    free, total = torch.cuda.mem_get_info()
+                    self.gpu_mem.append(100 * (total - free) / total)
+                except RuntimeError:
+                    self.gpu_util.append(0)
+                    self.gpu_mem.append(0)
             else:
                 self.gpu_util.append(0)
                 self.gpu_mem.append(0)

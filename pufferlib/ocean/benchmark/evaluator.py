@@ -199,6 +199,7 @@ class WOSACEvaluator:
 
             obs, info = puffer_env.reset()
             truncations = np.zeros((num_agents,), dtype=bool)
+            agent_done = np.zeros((num_agents,), dtype=bool)  # cumulative done mask
             state = {}
 
             if args["train"]["use_rnn"] and policy is not None:
@@ -215,7 +216,9 @@ class WOSACEvaluator:
                 trajectories["z"][:, rollout_idx, time_idx] = agent_state["z"]
                 trajectories["heading"][:, rollout_idx, time_idx] = agent_state["heading"]
                 trajectories["id"][:, rollout_idx, time_idx] = agent_state["id"]
-                trajectories["dones"][:, rollout_idx, time_idx] = truncations
+                # Use cumulative done mask: once an agent is done, it stays done
+                agent_done |= truncations
+                trajectories["dones"][:, rollout_idx, time_idx] = agent_done
 
                 # Step policy
                 if policy is None and actions is not None:

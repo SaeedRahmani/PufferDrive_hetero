@@ -182,14 +182,24 @@ class Drive(pufferlib.PufferEnv):
         self.agent_eval_z = None
         
         if self.style_z_dim > 0:
-            vae_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_model.pt")
-            stats_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_feature_stats.pt")
+            # Look for VAE model in human_data_dir first, then fallback to default path
+            vae_path = os.path.join(human_data_dir, "vae_model.pt")
+            stats_path = os.path.join(human_data_dir, "vae_feature_stats.pt")
+            if not os.path.exists(vae_path):
+                vae_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_model.pt")
+                stats_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_feature_stats.pt")
             if os.path.exists(vae_path) and os.path.exists(stats_path):
                 try:
                     checkpoint = torch.load(vae_path, map_location="cpu", weights_only=False)
+                    vae_z_dim = checkpoint["z_dim"]
+                    if vae_z_dim != self.style_z_dim:
+                        raise ValueError(
+                            f"VAE z_dim ({vae_z_dim}) does not match style_z_dim ({self.style_z_dim}). "
+                            f"Retrain VAE with --z-dim {self.style_z_dim} or set --env.style-z-dim {vae_z_dim}."
+                        )
                     self.vae_model = TrajectoryVAE(
                         input_dim=checkpoint["input_dim"],
-                        z_dim=checkpoint["z_dim"],
+                        z_dim=vae_z_dim,
                         hidden_size=checkpoint["hidden_size"],
                         seq_len=checkpoint["seq_len"]
                     )
@@ -197,7 +207,7 @@ class Drive(pufferlib.PufferEnv):
                     self.vae_model.eval()
                     self.vae_stats = torch.load(stats_path, map_location="cpu", weights_only=False)
                     self.vae_bptt = checkpoint["seq_len"]
-                    print("[INFO] Offline VAE loaded into environment for on-the-fly Z inference.")
+                    print(f"[INFO] Offline VAE loaded (z_dim={vae_z_dim}) for on-the-fly Z inference.")
                 except Exception as e:
                     print(f"Failed to load VAE: {e}")
 
@@ -596,9 +606,13 @@ class Drive(pufferlib.PufferEnv):
             )
 
         # Collect human trajectories.
+        # NOTE: C writes observations with _c_num_obs stride (no style z slots).
+        # We must allocate with _c_num_obs width so the BC injection code in pufferl.py
+        # detects obs_width == c_num_obs and correctly inserts z between ego and partner features.
+        expert_obs_dim = self._c_num_obs if self.style_z_dim > 0 else self.num_obs
         self.expert_actions_discrete = np.zeros((trajectory_length, self.num_agents, 1), dtype=np.float32)
         self.expert_actions_continuous = np.zeros((trajectory_length, self.num_agents, 2), dtype=np.float32)
-        self.expert_observations_full = np.zeros((trajectory_length, self.num_agents, self.num_obs), dtype=np.float32)
+        self.expert_observations_full = np.zeros((trajectory_length, self.num_agents, expert_obs_dim), dtype=np.float32)
 
         binding.vec_collect_expert_data(
             self.c_envs, self.expert_actions_discrete, self.expert_actions_continuous, self.expert_observations_full
@@ -1149,8 +1163,8 @@ def process_all_maps(
     binary_dir = Path(f"resources/drive/binaries/{dataset_name}")
     binary_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get all JSON files in the training directory
-    json_files = sorted(data_dir.glob("*.json"))
+    # Get all JSON files in the training directory (rglob for subdirs)
+    json_files = sorted(data_dir.rglob("*.json"))
 
     # Prepare arguments for parallel processing
     tasks = []
