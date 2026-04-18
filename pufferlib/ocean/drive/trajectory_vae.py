@@ -370,7 +370,7 @@ def label_expert_data(
     print(f"z stats: mean={z_vectors.mean(0).tolist()}, std={z_vectors.std(0).tolist()}")
     print(f"Saved to: {output_path}")
 
-    return z_vectors
+    return output_path
 
 
 if __name__ == "__main__":
