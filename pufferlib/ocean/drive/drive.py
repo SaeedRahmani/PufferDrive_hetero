@@ -680,7 +680,9 @@ class Drive(pufferlib.PufferEnv):
             with torch.no_grad():
                 # continuous_sequences shape: (N, h, 2)
                 cont_t = torch.from_numpy(continuous_sequences)
-                features = extract_kinematic_features(cont_t)
+                # Use logged signed speed from ego obs[:,:,2] * MAX_SPEED (=100.0, see drive.h)
+                speed_t = torch.from_numpy(obs_sequences[:, :, 2].astype(np.float32)) * 100.0
+                features = extract_kinematic_features(cont_t, expert_speed=speed_t)
                 features_norm = (features - self.vae_stats["mean"]) / self.vae_stats["std"].clamp(min=1e-6)
 
                 # Process in batches to avoid OOM

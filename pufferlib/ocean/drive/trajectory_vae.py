@@ -142,35 +142,47 @@ class TrajectoryVAE(nn.Module):
         return total_loss, recon_loss, kl_loss
 
 
-def extract_kinematic_features(expert_actions_continuous, dt=0.1):
+def extract_kinematic_features(expert_actions_continuous, expert_speed=None, dt=0.1):
     """Extract kinematic features from expert continuous actions.
 
     The expert continuous actions contain (acceleration, steering) per timestep.
     We compute derived kinematic features that characterize driving style:
       - acceleration (directly from actions)
       - steering magnitude (directly from actions)
-      - speed (integrated from acceleration, approximate)
+      - speed (logged ground-truth if provided, else integrated from acceleration)
       - jerk (derivative of acceleration)
 
     Args:
         expert_actions_continuous: tensor of shape (n_sequences, seq_len, 2)
             where dim 2 is (acceleration, steering)
+        expert_speed: optional tensor of shape (n_sequences, seq_len) with the
+            logged ground-truth (signed) speed in m/s. If provided, this is
+            used directly for the speed feature; otherwise speed is
+            approximated by integrating acceleration with a drag factor.
         dt: timestep duration in seconds
 
     Returns:
         features: tensor of shape (n_sequences, seq_len, 4)
-            where dim 2 is (acceleration, abs_steering, approx_speed, jerk)
+            where dim 2 is (acceleration, abs_steering, speed, jerk)
     """
     accel = expert_actions_continuous[:, :, 0]  # (n_seq, seq_len)
     steer = expert_actions_continuous[:, :, 1]  # (n_seq, seq_len)
 
-    # Approximate speed by integrating acceleration with a decay factor (drag)
-    # We iterate over seq_len to apply drag vs cumsum which acts perfectly frictionless
-    drag_factor = 0.95
-    speed = torch.zeros_like(accel)
-    for t in range(1, accel.shape[1]):
-        # v_t = max(v_{t-1} * drag + accel_{t-1} * dt, 0)
-        speed[:, t] = (speed[:, t-1] * drag_factor + accel[:, t-1] * dt).clamp(min=0)
+    if expert_speed is not None:
+        # Use the logged ground-truth speed directly (preferred).
+        speed = expert_speed.to(dtype=accel.dtype, device=accel.device)
+        assert speed.shape == accel.shape, (
+            f"expert_speed shape {tuple(speed.shape)} does not match accel shape {tuple(accel.shape)}"
+        )
+    else:
+        # Fallback: approximate speed by integrating acceleration with a
+        # decay factor (drag). Starts at 0, so this only matches reality for
+        # sequences that begin at rest.
+        drag_factor = 0.95
+        speed = torch.zeros_like(accel)
+        for t in range(1, accel.shape[1]):
+            # v_t = max(v_{t-1} * drag + accel_{t-1} * dt, 0)
+            speed[:, t] = (speed[:, t-1] * drag_factor + accel[:, t-1] * dt).clamp(min=0)
 
     # Jerk = derivative of acceleration
     jerk = torch.zeros_like(accel)
@@ -184,6 +196,35 @@ def extract_kinematic_features(expert_actions_continuous, dt=0.1):
     ], dim=-1)  # (n_seq, seq_len, 4)
 
     return features
+
+
+# Ego observation layout (see drive.h::compute_observations):
+#   obs[0] = rel_goal_x * 0.005
+#   obs[1] = rel_goal_y * 0.005
+#   obs[2] = signed_speed / MAX_SPEED   <-- logged, signed, normalized
+# MAX_SPEED is defined as 100.0 in drive.h.
+_EGO_SPEED_IDX = 2
+_MAX_SPEED = 100.0
+
+
+def _load_logged_speed(data_dir, bptt_horizon, seq_len_expected):
+    """Load logged signed speed (m/s) from expert_observations_h{H}.pt.
+
+    Returns None if the file is missing or the shape is unexpected, so
+    callers can fall back to the integrated-acceleration approximation.
+    """
+    obs_path = os.path.join(data_dir, f"expert_observations_h{bptt_horizon}.pt")
+    if not os.path.exists(obs_path):
+        print(f"[VAE] expert_observations not found at {obs_path}; "
+              f"falling back to integrated-acceleration speed.")
+        return None
+    obs = torch.load(obs_path, map_location="cpu", weights_only=False)
+    if obs.ndim != 3 or obs.shape[1] != seq_len_expected or obs.shape[2] <= _EGO_SPEED_IDX:
+        print(f"[VAE] expert_observations shape {tuple(obs.shape)} incompatible; "
+              f"falling back to integrated-acceleration speed.")
+        return None
+    # obs[:, :, 2] is signed_speed / MAX_SPEED -> recover m/s
+    return obs[:, :, _EGO_SPEED_IDX].contiguous() * _MAX_SPEED
 
 
 def train_vae(
@@ -226,8 +267,13 @@ def train_vae(
     expert_actions = torch.load(actions_path, map_location="cpu", weights_only=False)
     print(f"Loaded expert actions: {expert_actions.shape}")  # (n_sequences, seq_len, 2)
 
+    # Prefer logged speed from the expert observations; fall back to integration.
+    expert_speed = _load_logged_speed(data_dir, bptt_horizon, expert_actions.shape[1])
+    if expert_speed is not None:
+        print(f"Using logged speed from expert_observations: {expert_speed.shape}")
+
     # Extract kinematic features
-    features = extract_kinematic_features(expert_actions)
+    features = extract_kinematic_features(expert_actions, expert_speed=expert_speed)
     print(f"Extracted kinematic features: {features.shape}")  # (n_sequences, seq_len, 4)
 
     # Normalize features to zero mean, unit variance
@@ -344,8 +390,11 @@ def label_expert_data(
     actions_path = os.path.join(data_dir, f"expert_actions_continuous_h{bptt_horizon}.pt")
     expert_actions = torch.load(actions_path, map_location="cpu", weights_only=False)
 
+    # Prefer logged speed from the expert observations; fall back to integration.
+    expert_speed = _load_logged_speed(data_dir, bptt_horizon, expert_actions.shape[1])
+
     # Extract and normalize features
-    features = extract_kinematic_features(expert_actions)
+    features = extract_kinematic_features(expert_actions, expert_speed=expert_speed)
 
     stats_path = os.path.join(data_dir, "vae_feature_stats.pt")
     stats = torch.load(stats_path, map_location="cpu", weights_only=False)
