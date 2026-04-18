@@ -26,11 +26,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# Where expert data lives (matches drive.ini: human_data_dir)
-EXPERT_DATA_DIR = os.path.join(PROJECT_ROOT, "resources", "drive", "human_demonstrations")
+# Default human-data directory (overridable via --human-data-dir).
+# Must match `human_data_dir` in pufferlib/config/ocean/drive.ini.
+DEFAULT_HUMAN_DATA_DIR = os.path.join("resources", "drive", "human_demonstrations_v2")
 
-# Where VAE model is loaded from during training (hardcoded in drive.py)
-VAE_MODEL_DIR = os.path.join(PROJECT_ROOT, "pufferlib", "resources", "drive", "human_demonstrations")
+# These are filled in by main() after CLI parsing so that all step* functions
+# below operate on the user-selected directory.
+EXPERT_DATA_DIR = os.path.join(PROJECT_ROOT, DEFAULT_HUMAN_DATA_DIR)
+# drive.py loads vae_model.pt from human_data_dir first, then falls back to
+# pufferlib/resources/drive/human_demonstrations. We mirror to the same path
+# (since `resources` is a symlink to `pufferlib/resources`) — kept as a
+# separate variable so the fallback path can still be populated if needed.
+VAE_MODEL_DIR = os.path.join(PROJECT_ROOT, DEFAULT_HUMAN_DATA_DIR)
 
 
 def step1_collect_expert_data(num_maps=9000, num_agents=1024, bptt_horizon=32,
@@ -61,7 +68,10 @@ def step1_collect_expert_data(num_maps=9000, num_agents=1024, bptt_horizon=32,
         control_mode="control_vehicles",
         map_dir="resources/drive/binaries/training",
         style_z_dim=4,
-        style_z_dropout_prob=0.5,
+        # Irrelevant for data prep, but kept consistent with drive.ini default.
+        style_z_dropout_prob=0.0,
+        # Match drive.ini: no future-waypoint leakage in observations.
+        use_guidance_observations=0,
         episode_length=91,
         init_steps=0,
         action_type="discrete",
@@ -238,7 +248,19 @@ def main():
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--num-maps", type=int, default=9000)
     parser.add_argument("--max-expert-sequences", type=int, default=3600)
+    parser.add_argument("--human-data-dir", default=DEFAULT_HUMAN_DATA_DIR,
+                        help="Directory (relative to project root) for expert data + VAE artifacts. "
+                             "Must match `human_data_dir` in drive.ini.")
     args = parser.parse_args()
+
+    # Resolve the human-data dir against the project root and update the
+    # module-level globals that step* functions read from.
+    global EXPERT_DATA_DIR, VAE_MODEL_DIR
+    hdd = args.human_data_dir
+    if not os.path.isabs(hdd):
+        hdd = os.path.join(PROJECT_ROOT, hdd)
+    EXPERT_DATA_DIR = hdd
+    VAE_MODEL_DIR = hdd
 
     # Ensure we're running from project root
     os.chdir(PROJECT_ROOT)

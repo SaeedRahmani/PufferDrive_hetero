@@ -176,6 +176,7 @@ pufferlib/resources/drive/sanity/sanity_binaries/
 pufferlib/resources/drive/human_demonstrations/*
 pufferlib/resources/drive/human_demonstrations_6d/*
 pufferlib/resources/drive/human_demonstrations_8d/*
+pufferlib/resources/drive/human_demonstrations_v2/*
 
 # Compiled drive binary in root
 /drive

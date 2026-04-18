@@ -182,34 +182,60 @@ class Drive(pufferlib.PufferEnv):
         self.agent_eval_z = None
         
         if self.style_z_dim > 0:
-            # Look for VAE model in human_data_dir first, then fallback to default path
+            # Look for VAE model in human_data_dir first, then fallback to default path.
+            # NOTE: the fallback path is the OLD pre-fix cache; if it ever resolves
+            # we print a loud warning so the user knows they may be loading a stale
+            # model trained with different features (e.g. integrated-acceleration
+            # speed instead of logged speed) or different obs width.
             vae_path = os.path.join(human_data_dir, "vae_model.pt")
             stats_path = os.path.join(human_data_dir, "vae_feature_stats.pt")
-            if not os.path.exists(vae_path):
-                vae_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_model.pt")
-                stats_path = os.path.join("pufferlib/resources/drive/human_demonstrations", "vae_feature_stats.pt")
+            using_fallback = False
+            if not (os.path.exists(vae_path) and os.path.exists(stats_path)):
+                fallback_dir = "pufferlib/resources/drive/human_demonstrations"
+                vae_path = os.path.join(fallback_dir, "vae_model.pt")
+                stats_path = os.path.join(fallback_dir, "vae_feature_stats.pt")
+                using_fallback = True
             if os.path.exists(vae_path) and os.path.exists(stats_path):
-                try:
-                    checkpoint = torch.load(vae_path, map_location="cpu", weights_only=False)
-                    vae_z_dim = checkpoint["z_dim"]
-                    if vae_z_dim != self.style_z_dim:
-                        raise ValueError(
-                            f"VAE z_dim ({vae_z_dim}) does not match style_z_dim ({self.style_z_dim}). "
-                            f"Retrain VAE with --z-dim {self.style_z_dim} or set --env.style-z-dim {vae_z_dim}."
-                        )
-                    self.vae_model = TrajectoryVAE(
-                        input_dim=checkpoint["input_dim"],
-                        z_dim=vae_z_dim,
-                        hidden_size=checkpoint["hidden_size"],
-                        seq_len=checkpoint["seq_len"]
+                if using_fallback:
+                    print(
+                        f"[WARNING] VAE not found in human_data_dir={human_data_dir}; "
+                        f"falling back to {os.path.dirname(vae_path)}. This may be a "
+                        f"stale VAE trained with different features/obs width."
                     )
-                    self.vae_model.load_state_dict(checkpoint["model_state_dict"])
-                    self.vae_model.eval()
-                    self.vae_stats = torch.load(stats_path, map_location="cpu", weights_only=False)
-                    self.vae_bptt = checkpoint["seq_len"]
-                    print(f"[INFO] Offline VAE loaded (z_dim={vae_z_dim}) for on-the-fly Z inference.")
-                except Exception as e:
-                    print(f"Failed to load VAE: {e}")
+                checkpoint = torch.load(vae_path, map_location="cpu", weights_only=False)
+                vae_z_dim = checkpoint["z_dim"]
+                if vae_z_dim != self.style_z_dim:
+                    raise ValueError(
+                        f"VAE z_dim ({vae_z_dim}) does not match style_z_dim ({self.style_z_dim}). "
+                        f"Retrain VAE with --z-dim {self.style_z_dim} or set --env.style-z-dim {vae_z_dim}."
+                    )
+                self.vae_model = TrajectoryVAE(
+                    input_dim=checkpoint["input_dim"],
+                    z_dim=vae_z_dim,
+                    hidden_size=checkpoint["hidden_size"],
+                    seq_len=checkpoint["seq_len"]
+                )
+                self.vae_model.load_state_dict(checkpoint["model_state_dict"])
+                self.vae_model.eval()
+                self.vae_stats = torch.load(stats_path, map_location="cpu", weights_only=False)
+                self.vae_bptt = checkpoint["seq_len"]
+                print(f"[INFO] Offline VAE loaded from {vae_path} (z_dim={vae_z_dim}) "
+                      f"for on-the-fly Z inference.")
+            else:
+                # No VAE on disk. This is expected during the initial pretrain
+                # data-collection step (pretrain_vae_pipeline.py step1), where
+                # the VAE has not been trained yet and z_sequences will be left
+                # empty. For BC/RL training we require a VAE; the slurm
+                # pre-flight check (slurm_train.sh) gates this, and pufferl.py
+                # also warns if expert_style_z is missing at sample time. We
+                # therefore only warn here.
+                print(
+                    f"[WARNING] style_z_dim={self.style_z_dim} but no VAE found at "
+                    f"{os.path.join(human_data_dir, 'vae_model.pt')} (and no fallback). "
+                    f"Expert z-labels will be empty. This is OK only for the initial "
+                    f"pretrain data-collection step; for BC/RL training, run "
+                    f"pretrain_vae_pipeline.py first."
+                )
 
         self._dynamics_model_flag = 0 if dynamics_model == "classic" else 1
 
@@ -337,9 +363,29 @@ class Drive(pufferlib.PufferEnv):
                     os.path.join(self.human_data_dir, f"expert_observations_h{bptt_horizon}.pt"),
                     map_location="cpu", weights_only=False,
                 )
+                # Sanity: cached obs width must match the current env config.
+                # Mismatch indicates the cache was generated with a different
+                # use_guidance_observations / dynamics_model / style_z_dim, in
+                # which case BC would silently train on shifted features.
+                expected_obs_dim = self._c_num_obs if self.style_z_dim > 0 else self.num_obs
+                cached_obs_dim = self._expert_obs_cache.shape[-1]
+                if cached_obs_dim != expected_obs_dim:
+                    raise RuntimeError(
+                        f"Cached expert observations in {self.human_data_dir} have "
+                        f"width {cached_obs_dim}, but the current env expects "
+                        f"{expected_obs_dim}. Regenerate the cache "
+                        f"(prep_human_data=True with a fresh human_data_dir) or "
+                        f"point human_data_dir at a compatible cache."
+                    )
                 z_cache_path = os.path.join(self.human_data_dir, f"expert_style_z_h{bptt_horizon}.pt")
                 if self.style_z_dim > 0 and os.path.exists(z_cache_path):
                     self._expert_z_cache = torch.load(z_cache_path, map_location="cpu", weights_only=False)
+                    if self._expert_z_cache.shape[-1] != self.style_z_dim:
+                        raise RuntimeError(
+                            f"Cached expert z in {self.human_data_dir} has "
+                            f"z_dim={self._expert_z_cache.shape[-1]}, but env "
+                            f"style_z_dim={self.style_z_dim}. Regenerate."
+                        )
                 self._cache_size = len(self._expert_discrete_cache)
             else:
                 self._cache_size = 0
