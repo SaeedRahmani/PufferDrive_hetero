@@ -313,21 +313,34 @@ class Drive(pufferlib.PufferEnv):
         else:
             self._style_z = None
 
+        # In-memory cache for expert data — populated by _prep_human_data or loaded from disk.
+        # sample_expert_data reads from these to avoid per-call disk I/O.
+        self._expert_discrete_cache = None
+        self._expert_continuous_cache = None
+        self._expert_obs_cache = None
+        self._expert_z_cache = None
+
         os.makedirs(self.human_data_dir, exist_ok=True)
 
         if self.prep_human_data and not Drive._human_data_prepped:
             self.expert_data_metrics = self._prep_human_data(bptt_horizon)
             Drive._human_data_prepped = True
         elif self.prep_human_data:
-            if self.save_data_to_disk and os.path.exists(
-                os.path.join(self.human_data_dir, f"expert_actions_discrete_h{bptt_horizon}.pt")
-            ):
-                discrete_actions = torch.load(
-                    os.path.join(self.human_data_dir, f"expert_actions_discrete_h{bptt_horizon}.pt"),
-                    map_location="cpu",
-                    weights_only=False,
+            discrete_path = os.path.join(self.human_data_dir, f"expert_actions_discrete_h{bptt_horizon}.pt")
+            if self.save_data_to_disk and os.path.exists(discrete_path):
+                self._expert_discrete_cache = torch.load(discrete_path, map_location="cpu", weights_only=False)
+                self._expert_continuous_cache = torch.load(
+                    os.path.join(self.human_data_dir, f"expert_actions_continuous_h{bptt_horizon}.pt"),
+                    map_location="cpu", weights_only=False,
                 )
-                self._cache_size = len(discrete_actions)
+                self._expert_obs_cache = torch.load(
+                    os.path.join(self.human_data_dir, f"expert_observations_h{bptt_horizon}.pt"),
+                    map_location="cpu", weights_only=False,
+                )
+                z_cache_path = os.path.join(self.human_data_dir, f"expert_style_z_h{bptt_horizon}.pt")
+                if self.style_z_dim > 0 and os.path.exists(z_cache_path):
+                    self._expert_z_cache = torch.load(z_cache_path, map_location="cpu", weights_only=False)
+                self._cache_size = len(self._expert_discrete_cache)
             else:
                 self._cache_size = 0
 
@@ -705,29 +718,34 @@ class Drive(pufferlib.PufferEnv):
             "expert_data/resampling_factor": num_sequences / len(discrete_sequences_list) if needs_resampling else 1.0,
         }
 
+        # Cache tensors in memory for fast access during training
+        self._expert_discrete_cache = torch.from_numpy(discrete_sequences)
+        self._expert_continuous_cache = torch.from_numpy(continuous_sequences)
+        self._expert_obs_cache = torch.from_numpy(obs_sequences)
+        self._expert_z_cache = torch.from_numpy(z_sequences) if len(z_sequences) > 0 else None
+
         if self.save_data_to_disk:
             print(
                 f"Saving {num_sequences} expert sequences of length {bptt_horizon} to disk at {self.human_data_dir}..."
             )
             torch.save(
-                torch.from_numpy(discrete_sequences),
+                self._expert_discrete_cache,
                 os.path.join(self.human_data_dir, f"expert_actions_discrete_h{bptt_horizon}.pt"),
             )
             torch.save(
-                torch.from_numpy(continuous_sequences),
+                self._expert_continuous_cache,
                 os.path.join(self.human_data_dir, f"expert_actions_continuous_h{bptt_horizon}.pt"),
             )
             torch.save(
-                torch.from_numpy(obs_sequences),
+                self._expert_obs_cache,
                 os.path.join(self.human_data_dir, f"expert_observations_h{bptt_horizon}.pt"),
             )
 
-            if len(z_sequences) > 0:
+            if self._expert_z_cache is not None:
                 torch.save(
-                    torch.from_numpy(z_sequences),
+                    self._expert_z_cache,
                     os.path.join(self.human_data_dir, f"expert_style_z_h{bptt_horizon}.pt"),
                 )
-
 
         return data_metrics
 
@@ -750,44 +768,41 @@ class Drive(pufferlib.PufferEnv):
             For continuous actions, the shape is always (n_samples, bptt_horizon, 2).
             Jerk dynamics model is not currently supported for expert data.
         """
-        if not self.save_data_to_disk:
-            raise ValueError("Expert data was not saved to disk. Cannot sample expert data.")
+        if self._expert_obs_cache is None and not self.save_data_to_disk:
+            raise ValueError("Expert data is not cached and was not saved to disk. Cannot sample expert data.")
 
-        discrete_path = os.path.join(self.human_data_dir, f"expert_actions_discrete_h{self.bptt_horizon}.pt")
-        continuous_path = os.path.join(self.human_data_dir, f"expert_actions_continuous_h{self.bptt_horizon}.pt")
-        observations_path = os.path.join(self.human_data_dir, f"expert_observations_h{self.bptt_horizon}.pt")
-
-        observations_full = torch.load(observations_path, map_location="cpu", weights_only=False)
-
-        # breakpoint()
+        # Use in-memory cache; fall back to disk only if cache was never populated
+        if self._expert_obs_cache is not None:
+            discrete_full = self._expert_discrete_cache
+            continuous_full = self._expert_continuous_cache
+            observations_full = self._expert_obs_cache
+            z_full = self._expert_z_cache
+        else:
+            discrete_path = os.path.join(self.human_data_dir, f"expert_actions_discrete_h{self.bptt_horizon}.pt")
+            continuous_path = os.path.join(self.human_data_dir, f"expert_actions_continuous_h{self.bptt_horizon}.pt")
+            observations_path = os.path.join(self.human_data_dir, f"expert_observations_h{self.bptt_horizon}.pt")
+            z_path = os.path.join(self.human_data_dir, f"expert_style_z_h{self.bptt_horizon}.pt")
+            discrete_full = torch.load(discrete_path, map_location="cpu", weights_only=False)
+            continuous_full = torch.load(continuous_path, map_location="cpu", weights_only=False)
+            observations_full = torch.load(observations_path, map_location="cpu", weights_only=False)
+            z_full = torch.load(z_path, map_location="cpu", weights_only=False) if os.path.exists(z_path) else None
 
         # Sample indices
         samples = min(n_samples, self._cache_size)
         indices = torch.randint(0, self._cache_size, (samples,))
 
-        # print(f'Sampling {samples} expert sequences from {self._cache_size} available sequences.')
-        # print(indices)
-
         sampled_obs = observations_full[indices]
 
-        # Load Zs
-        z_path = os.path.join(self.human_data_dir, f"expert_style_z_h{self.bptt_horizon}.pt")
         sampled_z = None
-        if self.style_z_dim > 0 and os.path.exists(z_path):
-            z_full = torch.load(z_path, map_location="cpu", weights_only=False)
+        if self.style_z_dim > 0 and z_full is not None:
             sampled_z = z_full[indices]
 
         if return_both:
-            discrete_actions = torch.load(discrete_path, map_location="cpu", weights_only=False)
-            continuous_actions = torch.load(continuous_path, map_location="cpu", weights_only=False)
             if sampled_z is not None:
-                return discrete_actions[indices], continuous_actions[indices], sampled_obs, sampled_z
-            return discrete_actions[indices], continuous_actions[indices], sampled_obs
+                return discrete_full[indices], continuous_full[indices], sampled_obs, sampled_z
+            return discrete_full[indices], continuous_full[indices], sampled_obs
         else:
-            if self._action_type_flag == 1:
-                actions = torch.load(continuous_path, map_location="cpu", weights_only=False)
-            else:
-                actions = torch.load(discrete_path, map_location="cpu", weights_only=False)
+            actions = continuous_full if self._action_type_flag == 1 else discrete_full
             if sampled_z is not None:
                 return actions[indices], sampled_obs, sampled_z
             return actions[indices], sampled_obs

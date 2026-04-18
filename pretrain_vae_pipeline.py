@@ -148,13 +148,14 @@ def step3_label_data(bptt_horizon=32, device="cuda"):
     vae_model_path = os.path.join(EXPERT_DATA_DIR, "vae_model.pt")
     assert os.path.exists(vae_model_path), f"VAE model not found: {vae_model_path}"
 
-    z_path = label_expert_data(
+    label_expert_data(
         vae_model_path=vae_model_path,
         data_dir=EXPERT_DATA_DIR,
         bptt_horizon=bptt_horizon,
         device=device,
     )
 
+    z_path = os.path.join(EXPERT_DATA_DIR, f"expert_style_z_h{bptt_horizon}.pt")
     print(f"\nLabeled z saved to: {z_path}")
 
     # Verify

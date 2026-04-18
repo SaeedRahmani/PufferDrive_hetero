@@ -511,18 +511,6 @@ class PuffeRL:
                     logits=human_logits, action=human_actions
                 )
 
-            adv = advantages[idx]
-            adv = compute_puff_advantage(
-                mb_values,
-                mb_rewards,
-                mb_terminals,
-                ratio,
-                adv,
-                config["gamma"],
-                config["gae_lambda"],
-                config["vtrace_rho_clip"],
-                config["vtrace_c_clip"],
-            )
             adv = mb_advantages
             adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8)
 
@@ -550,8 +538,6 @@ class PuffeRL:
                 - config["ent_coef"] * entropy_loss
                 - config["human_ll_coef"] * human_nll
             )
-            self.amp_context.__enter__()  # TODO: AMP needs some debugging
-
             # This breaks vloss clipping?
             self.values[idx] = newvalue.detach().float()
 
